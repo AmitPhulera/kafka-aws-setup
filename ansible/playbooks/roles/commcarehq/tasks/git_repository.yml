@@ -1,0 +1,41 @@
+- set_fact:
+    repo_dest: "{{ [code_source, item.dest|default('')]|reject('eq', '')|join('/') }}"
+    deploy_key: "{% if item.deploy_key|default('') %}{{ cchq_home }}/.ssh/{{ item.deploy_key }}{% else %}{% endif %}"
+
+- name: register git repo ({{ item.url }})
+  stat: path="{{ repo_dest }}/.git"
+  register: gitdir
+
+- block:
+  - name: Create releses directory
+    file:
+      path: "{{ code_releases }}"
+      state: directory
+      mode: 0755
+    tags: git
+
+  - name: Pull source repo ({{ item.url }})
+    git_setup_release:
+      repo: "{{ item.url }}"
+      dest: "{{ repo_dest }}"
+      version: "{{ item.version }}"
+      reference: "{{ code_releases }}/.git_mirrors"
+      key_file: "{{ deploy_key|default(omit, true) }}"
+    tags:
+      - git
+      - slow
+
+  - name: install pip requirements ({{ item.url }})
+    pip:
+      requirements: "{{ repo_dest }}/{{ item.requirements_path }}"
+      virtualenv: "{{ virtualenv_source }}"
+      virtualenv_python: "{{ python_name }}"
+      chdir: "{{ code_source }}"
+    when: item.requirements_path|default(None) and not testing|default(False)
+    tags:
+      - slow
+      - python
+
+  when: (CCHQ_IS_FRESH_INSTALL is defined and CCHQ_IS_FRESH_INSTALL) or not gitdir.stat.exists
+  become: true
+  become_user: "{{ cchq_user }}"

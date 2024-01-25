@@ -1,0 +1,154 @@
+# This task file is dedicated to the last layer of setup that occurs
+# after postgresql has been installed and presented as a running service:
+#   - Create pg users
+#   - Set pg user privileges
+#   - Create pg databases
+#
+# There are two ways of running this task file:
+#
+# A. Run directly from the VM that hosts PostgreSQL (db_is_remote = false)
+#   Use case:
+#     postgresql instance that we installed via this role
+#   Target:
+#     current machine
+#   Authentication:
+#     run on-VM as privileged `postgres` user
+#
+# OR
+#
+# B. Run from a second machine against a black-box PostgreSQL service (db_is_remote = true)
+#   Use case:
+#     black-box PostgreSQL service like Amazon RDS
+#   Target:
+#     remote host
+#   Authentication:
+#     use a root pg username/password created via the third-party console (or terraform).
+#
+# Throughout the file, each task uses the passed-in `db_is_remote` variable to decide
+# how to authenticate and how to target the pg instance.
+- name: Ensure service is running
+  become: yes
+  service:
+    name: "postgresql@{{ postgresql_version }}-main"
+    state: started
+  when: not db_is_remote
+
+- name: Create PostgreSQL users
+  become: yes
+  become_user: "{{ db_is_remote and 'ansible' or 'postgres' }}"
+  vars:
+    ansible_ssh_pipelining: true
+  postgresql_user:
+    name: "{{ item.username }}"
+    password: "{{ item.password }}"
+    role_attr_flags: "{{ item.role_attr_flags|default('CREATEDB') }}"
+    state: present
+    port: "{{ postgresql_port }}"
+    login_host: "{{ db_is_remote and postgresql_host or omit }}"
+    login_user: "{{ db_is_remote and postgres_users.root.username or omit }}"
+    login_password: "{{ db_is_remote and postgres_users.root.password or omit }}"
+    db: 'postgres'
+    encrypted: True
+  when: not is_pg_standby
+  with_items: "{{ postgres_users.values() | list }}"
+  tags:
+    - postgres_users
+  register: result
+  until: not result.failed or 'starting up' not in result.msg
+  retries: 5
+  delay: 20
+
+- name: Add user privs
+  become: yes
+  become_user: "{{ db_is_remote and 'ansible' or 'postgres' }}"
+  vars:
+    ansible_ssh_pipelining: true
+  postgresql_privs:
+    db: postgres
+    state: present
+    type: "{{ item.1.type|default(omit) }}"
+    privs: "{{ item.1.privs|default(omit) }}"
+    objs: "{{ item.1.objs }}"
+    roles: "{{ item.0.username }}"
+    port: "{{ postgresql_port }}"
+    login_host: "{{ db_is_remote and postgresql_host or omit }}"
+    login_user: "{{ db_is_remote and postgres_users.root.username or omit }}"
+    login_password: "{{ db_is_remote and postgres_users.root.password or omit }}"
+  when: not is_pg_standby
+  with_subelements:
+    - "{{ postgres_users.values() | list }}"
+    - privs
+    - flags:
+      skip_missing: True
+  tags:
+    - postgres_users
+
+- name: Create PostgreSQL databases
+  become_user: "{{ db_is_remote and 'ansible' or 'postgres' }}"
+  vars:
+    ansible_ssh_pipelining: true
+  postgresql_db:
+    name: "{{ item.name }}"
+    state: present
+    port: "{{ postgresql_port }}"
+    owner: "{{ item.user }}"
+    encoding: 'UTF-8'
+    lc_collate: 'en_US.UTF-8'
+    lc_ctype: 'en_US.UTF-8'
+    template: 'template0'
+    login_host: "{{ db_is_remote and postgresql_host or omit }}"
+    login_user: "{{ db_is_remote and postgres_users.root.username or omit }}"
+    login_password: "{{ db_is_remote and postgres_users.root.password or omit }}"
+
+  with_items: "{{ postgresql_dbs.all }}"
+  when: item.create and ((item.host == postgresql_host) or is_monolith|bool)
+
+- name: Update PostgreSQL database config
+  become_user: "{{ db_is_remote and 'ansible' or 'postgres' }}"
+  vars:
+    ansible_ssh_pipelining: true
+  postgresql_set:
+    name: "{{ item.1.name }}"
+    value: "{{ item.1.value }}"
+    db: "{{ item.0.name }}"
+    port: "{{ postgresql_port }}"
+    login_host: "{{ db_is_remote and postgresql_host or omit }}"
+    login_user: "{{ db_is_remote and postgres_users.root.username or omit }}"
+    login_password: "{{ db_is_remote and postgres_users.root.password or omit }}"
+  loop: "{{ postgresql_dbs.all | subelements('pg_config', 'skip_missing=True') }}"
+  when: item.0.create and ((item.0.host == postgresql_host) or is_monolith|bool)
+
+- name: Enable postgres_fdw extension in the main db
+  become: yes
+  become_user: "{{ db_is_remote and 'ansible' or 'postgres' }}"
+  postgresql_query:
+    db: '{{ postgresql_dbs.main.name }}'
+    port: "{{ postgresql_port }}"
+    login_host: "{{ db_is_remote and postgresql_host or omit }}"
+    login_user: "{{ db_is_remote and postgres_users.root.username or omit }}"
+    login_password: "{{ db_is_remote and postgres_users.root.password or omit }}"
+    query: |
+      CREATE EXTENSION IF NOT EXISTS postgres_fdw;
+      GRANT USAGE ON FOREIGN DATA WRAPPER postgres_fdw TO {{ postgres_users.commcare.username }};
+  when: postgresql_dbs.repeaters and postgresql_host == postgresql_dbs.main.host
+
+- name: Create repeaters_fdw_user in repeaters database
+  # for postgres_fdw because it changes session settings like
+  # search_path that interfere with other pgbouncer clients
+  become: yes
+  become_user: "{{ db_is_remote and 'ansible' or 'postgres' }}"
+  postgresql_query:
+    db: '{{ postgresql_dbs.main.name }}'
+    port: "{{ postgresql_port }}"
+    login_host: "{{ db_is_remote and postgresql_host or omit }}"
+    login_user: "{{ db_is_remote and postgres_users.root.username or omit }}"
+    login_password: "{{ db_is_remote and postgres_users.root.password or omit }}"
+    query: |
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'repeaters_fdw_user') THEN
+          CREATE USER repeaters_fdw_user
+            WITH PASSWORD '{{ postgres_users.commcare.password }}'
+            IN ROLE "{{ postgres_users.commcare.username }}";
+        END IF;
+      END $$;
+  when: postgresql_dbs.repeaters and postgresql_host == postgresql_dbs.repeaters.host

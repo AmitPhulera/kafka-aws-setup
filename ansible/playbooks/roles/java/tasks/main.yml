@@ -1,0 +1,20 @@
+---
+- name: Install Java
+  become: yes
+  apt:
+    name: "{{ java_packages }}"
+
+- name: Correct java version selected
+  alternatives:
+    name: java
+    path: "{{ java_bin_path }}/java"
+
+- name: Check the Java version
+  command: java -version
+  changed_when: false
+  register: java_version
+
+- name: Display the Java version.
+  debug:
+    var: java_version
+    verbosity: 2

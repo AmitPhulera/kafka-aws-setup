@@ -1,0 +1,27 @@
+---
+
+- name: SharedDirHost
+  hosts: shared_dir_host  # Should be one
+  become: yes
+  vars_files:
+    - ../group_vars/all.yml
+    - shared_dir/vars/main.yml
+  tasks:
+    - import_tasks: shared_dir/tasks/install.yml
+    - import_tasks: shared_dir/tasks/setup_host.yml
+
+- name: SharedDirClient
+  hosts:
+    - celery
+    - django_manage
+    - proxy
+    - pillowtop
+    - shared_dir_host
+    - webworkers
+  become: yes
+  vars_files:
+    - ../group_vars/all.yml
+    - shared_dir/vars/main.yml
+  tasks:
+    - import_tasks: shared_dir/tasks/install.yml
+    - import_tasks: shared_dir/tasks/setup_client.yml

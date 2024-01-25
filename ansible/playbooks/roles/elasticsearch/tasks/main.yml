@@ -1,0 +1,252 @@
+- name: "Check if Cluster Name is updated for Elasticsearch V7"
+  assert:
+    that:
+      - "'es7_' in elasticsearch_cluster_name"
+    fail_msg: "Elasticsearch V7 cluster name should start with es7_ prefix"
+  when: elasticsearch_version is version('7.0.0', '>=')
+
+- name: Downloads Directory
+  file: path="/home/{{ cchq_user }}/downloads/" state=directory
+
+- name: Create elasticsearch user
+  user: name=elasticsearch createhome=no password=no state=present
+
+- name: "Tune vm.max_map_count"
+  lineinfile:
+    dest: /etc/sysctl.conf
+    line: "vm.max_map_count=262144"
+    state: present
+  become: yes
+
+- name: "Tune vm.max_map_count (for current session)"
+  sysctl:
+    name: vm.max_map_count
+    value: '262144'
+    state: present
+  become: yes
+  
+- name: Download Elasticsearch 2.4.x
+  become: yes
+  get_url:
+    url: "https://download.elasticsearch.org/elasticsearch/elasticsearch/elasticsearch-{{ elasticsearch_version }}.tar.gz"
+    dest: "/home/{{ cchq_user }}/downloads/elasticsearch-{{ elasticsearch_version }}.tar.gz"
+    sha256sum: "{{ elasticsearch_download_sha256 }}"
+  when: elasticsearch_version == "2.4.6"
+
+- name: Download Elasticsearch 5
+  become: yes
+  copy:
+    src: "elasticsearch-5.6.16.tar.gz"
+    dest: "/home/{{ cchq_user }}/downloads/elasticsearch-{{ elasticsearch_version }}.tar.gz"
+  when: elasticsearch_version == "5.6.16"
+
+- name: Download Elasticsearch 7
+  become: yes
+  get_url:
+    url: "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-{{ elasticsearch_version }}-linux-x86_64.tar.gz"
+    dest: "/home/{{ cchq_user }}/downloads/elasticsearch-{{ elasticsearch_version }}.tar.gz"
+    sha256sum: "{{ elasticsearch_download_sha256 }}"
+  when: elasticsearch_version is version('7.0.0', '>=')
+
+- name: Unarchive Elasticsearch
+  become: yes
+  unarchive:
+    src: "/home/{{ cchq_user }}/downloads/elasticsearch-{{ elasticsearch_version }}.tar.gz"
+    dest: /opt/
+    copy: no
+
+- name: Chown Elasticsearch
+  become: yes
+  file:
+    state: directory
+    owner: elasticsearch
+    group: elasticsearch
+    recurse: yes
+    path: "{{ elasticsearch_home }}"
+
+- name: Create /etc/elasticsearch
+  become: yes
+  file:
+    path: "{{ elasticsearch_conf_dir }}"
+    state: directory
+    owner: elasticsearch
+    group: elasticsearch
+
+- name: Copy Elasticsearch Config
+  become: yes
+  template:
+    src: config/elasticsearch.yml.j2
+    dest: "{{ elasticsearch_conf_dir }}/elasticsearch.yml"
+    owner: elasticsearch
+    group: elasticsearch
+  register: copy_elasticsearch_conf_result
+  tags:
+    - es_conf
+
+- include: misc_v2.yml
+  when: elasticsearch_version == '2.4.6'
+
+- include: misc_v5.yml
+  when: elasticsearch_version == '5.6.16'
+
+- include: misc_v7.yml
+  when: elasticsearch_version is version('7.0.0', '>=')
+
+- name: Copy Elasticsearch Systemd Conf
+  become: yes
+  template:
+    src: systemd/elasticsearch.service.j2
+    dest: /etc/systemd/system/elasticsearch.service
+  register: copy_elasticsearch_systemd_result
+  tags:
+    - es_conf
+
+- name: Reload Systemd Daemon if Elasticsearch config changed and Restart ElasticSearch.
+  become: yes
+  systemd:
+    state: restarted
+    daemon-reload: yes
+    name: elasticsearch
+  when: copy_elasticsearch_systemd_result.changed
+  tags:
+    - es_conf
+
+- debug: msg="If you're just updating the ES conf then you sill need to restart the cluster. Use  the 'es_rolling_restart' playbook."
+  when: copy_elasticsearch_conf_result.changed
+
+- name: Create Elasticsearch data directories
+  become: yes
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: elasticsearch
+    group: elasticsearch
+    mode: 0755
+  with_items:
+    - "{{ elasticsearch_data_dir }}"
+    - "{{ elasticsearch_data_dir }}/data"
+    - "{{ elasticsearch_data_dir }}/logs"
+
+- name: Start Elasticsearch
+  become: yes
+  service: name=elasticsearch state=started  enabled=yes
+  register: result
+  failed_when: (result.state is defined) and (result.state != "started")
+  tags: after-reboot
+
+- name: Restart Elasticsearch
+  become: yes
+  service: name=elasticsearch state=restarted
+  when: copy_elasticsearch_conf_result.changed or copy_elasticsearch_logging_result.changed
+  tags:
+    - es_restart
+
+- name: Check that Elasticsearch is up after 20 seconds
+  wait_for:
+    host: "{{ groups.elasticsearch.0 }}"
+    port: 9200
+    delay: 20
+
+- name: Create initial snapshot
+  uri:
+    url: 'http://{{ groups.elasticsearch.0 }}:9200/_snapshot/{{ es_repository_name }}'
+    method: PUT
+    body: ' {"type": "s3", "settings": {"bucket": "{{ es_snapshot_bucket }}", "compress": "true", "server_side_encryption": "true", "endpoint": "{{aws_endpoint}}" }}'
+  when: backup_es_s3 and inventory_hostname == groups.elasticsearch.0
+  tags:
+    - cron
+    - backups
+
+- name: Create initial snapshot
+  uri:
+    url: 'http://{{ groups.elasticsearch.0 }}:9200/_snapshot/{{ es_repository_name }}'
+    method: PUT
+    body: ' {"type": "swift", "settings": {"swift_url": "{{ swift_url }}", "swift_container": "{{ swift_container }}", "swift_username": "{{ secrets.es_swift_username }}", "swift_password": "{{ secrets.es_swift_password }}" }}'
+  when: backup_es_swift and inventory_hostname == groups.elasticsearch.0
+  tags:
+    - cron
+    - backups
+
+- name: Register Local Repository
+  file:
+    dest: "{{ elasticsearch_data_dir }}/snapshot/"
+    state: directory
+    owner: elasticsearch
+    group: elasticsearch
+    mode: 0755
+  when: es_local_repo and not backup_es_s3
+
+- name: Remove old backup script
+  file:
+    dest: "/etc/cron.d/create_es_snapshot.py"
+    state: absent
+  tags:
+    - cron
+    - backups
+
+- name: Copy es backup script
+  become: yes
+  template:
+    src: "{{ item }}"
+    dest: "/usr/local/sbin/"
+    group: root
+    owner: root
+    mode: 0700
+    backup: yes
+  with_items:
+    - create_es_snapshot.py.j2
+    - check_snapshot_status.py.j2
+  when: (es_local_repo or backup_es_s3 or backup_es_swift) and inventory_hostname == groups.elasticsearch.0
+  tags:
+    - cron
+    - backups
+
+- name: Create es backup cron job
+  become: yes
+  cron:
+    name: "Daily ES Snapshot"
+    job: "/usr/local/sbin/create_es_snapshot.py"
+    hour: "{{ (nadir_hour|default(0)+4) % 24 }}"
+    minute: 0
+    user: root
+    cron_file: create_es_snapshot
+  when: (es_local_repo or backup_es_s3 or backup_es_swift) and inventory_hostname == groups.elasticsearch.0
+  tags:
+    - cron
+    - backups
+  
+- name: Elasticsearch monit config
+  become: yes
+  template:
+    src: "monit.elasticsearch.j2"
+    dest: "/etc/monit/conf.d/elasticsearch"
+    group: root
+    owner: root
+    mode: 0640
+  notify: reload monit
+  tags: monit
+
+- name: Copy Elasticsearch log_retention file
+  template:
+    src: "delete_older_es_logs.sh.j2"
+    dest: "/usr/local/sbin/delete_older_es_logs.sh"
+    group: root
+    owner: root
+    mode: 0700
+    backup: yes
+  when: elasticsearch_delete_old_logs|bool
+  tags:
+    - cron
+
+- name: Create Daily Cron job to delete elasticsearch_logs
+  cron:
+    name: "delete older elasticsearch logs"
+    job: "/usr/local/sbin/delete_older_es_logs.sh {{ elasticsearch_log_retention_days }}"
+    minute: 20
+    hour: "{{ nadir_hour|default(0) }}"
+    weekday: "1,2,3,4,5,6"
+    user: root
+    cron_file: delete_older_es_logs
+    state: '{{ "present" if elasticsearch_delete_old_logs else "absent"}}'
+  tags:
+    - cron

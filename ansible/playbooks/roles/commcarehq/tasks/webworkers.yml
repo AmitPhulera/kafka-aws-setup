@@ -1,0 +1,21 @@
+- name: define django worker service
+  become: yes
+  template:
+    src: "{{ supervisor_service_files.django.template }}"
+    dest: "{{ supervisor_service_files.django.file_path }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0644
+  when: supervisor_service_files.django.should_exist
+  with_items:
+    - env_vars:
+        http_proxy: "{% if http_proxy_address is defined %}http://{{ http_proxy_address }}:{{ http_proxy_port }}{% endif %}"
+        https_proxy: "{% if http_proxy_address is defined %}https://{{ http_proxy_address }}:{{ http_proxy_port }}{% endif %}"
+        no_proxy: "{% if http_proxy_address is defined %}{{ groups['all'] | join(',') }},{{ app_processes_config.additional_no_proxy_hosts }}{% endif %}"
+        TMPDIR: '{{ encrypted_tmp }}'
+        DATADOG_PATCH_MODULES: "{% if app_processes_config.datadog_pythonagent %}{{ datadog_patch_modules|join(',') }}{% endif %}"
+        PROMETHEUS_MULTIPROC_DIR: "{% if prometheus_monitoring_enabled|default(False) %}{{ metrics_home }}{% endif %}"
+        DATADOG_ENV: "{% if app_processes_config.datadog_pythonagent %}{{ env_monitoring_id }}{% endif %}"
+        DD_REQUESTS_SERVICE_NAME: "{% if app_processes_config.datadog_pythonagent %}requests{% endif %}"
+        DD_REQUESTS_SPLIT_BY_DOMAIN: "{% if app_processes_config.datadog_pythonagent %}True{% endif %}"
+      gunicorn_workers: "{{ app_processes_config.gunicorn_workers_static_factor + (ansible_processor_vcpus * app_processes_config.gunicorn_workers_factor)|int }}"

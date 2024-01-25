@@ -1,0 +1,107 @@
+---
+- name: Copy replication credentials
+  become: yes
+  template:
+    src: "plain/pgpass.j2"
+    dest: "{{ postgresql_user_home }}/.pgpass"
+    group: postgres
+    owner: postgres
+    mode: 0600
+    backup: yes
+
+- name: Copy postgres backup script
+  become: yes
+  template:
+    src: "plain/create_postgres_dump.sh.j2"
+    dest: "/usr/local/sbin/create_postgres_dump.sh"
+    group: postgres
+    owner: postgres
+    mode: 0700
+    backup: yes
+
+- name: install boto3
+  become: yes
+  pip:
+    name: boto3
+    version: 1.4.0
+  when: postgres_s3|bool
+
+- name: Set up aws credentials
+  become: yes
+  import_role:
+    name: backups
+    tasks_from: set_up_aws_credentials.yml
+  vars:
+    s3_user: "postgres"
+    s3_user_home_dir: "{{ postgresql_user_home }}"
+  when: postgres_s3|bool
+  tags:
+    - cron
+    - backups
+
+- name: Create Hourly Cron job
+  become: yes
+  cron:
+    name: "Backup postgres hourly"
+    job: "/usr/local/sbin/create_postgres_dump.sh hourly {{ postgresql_backup_hours * 60 }}"
+    minute: 15
+    hour: "*/{{ nadir_hour_frequency|default(3) }}"
+    weekday: "1,2,3,4,5,6"
+    user: postgres
+    cron_file: backup_postgres
+    state: "{{ 'present' if postgres_backup_hourly and 'pg_backup' in group_names else 'absent' }}"
+
+- name: Create Daily Cron job
+  become: yes
+  cron:
+    name: "Backup postgres daily"
+    job: "/usr/local/sbin/create_postgres_dump.sh daily {{ postgresql_backup_days }}"
+    minute: 0
+    hour: "{{ nadir_hour }}"
+    weekday: "1,2,3,4,5,6"
+    user: postgres
+    cron_file: backup_postgres
+
+- name: Create Weekly Cron job
+  become: yes
+  cron:
+    name: "Backup postgres weekly"
+    job: "/usr/local/sbin/create_postgres_dump.sh weekly {{ postgresql_backup_weeks * 7 }}"
+    minute: 0
+    hour: "{{ nadir_hour }}"
+    weekday: 0
+    user: postgres
+    cron_file: backup_postgres
+
+- name: Set up check_s3_backups
+  become: yes
+  import_role:
+    name: backups
+    tasks_from: set_up_check_s3_backups.yml
+  vars:
+    service: 'postgres'
+    condition: "{{ check_s3_backups_email and postgres_s3 and backup_postgres and ('postgresql' in group_names or 'pg_backup' in group_names) }}"
+    user: "postgres"
+    service_backup_dir: "{{ postgresql_backup_dir }}"
+
+- name: copy retrieve script
+  become: yes
+  template:
+    src: "plain/retrieve_backup.py.j2"
+    dest: "/usr/local/sbin/retrieve_backup.py"
+    group: root
+    owner: root
+    mode: 0700
+    backup: yes
+  when: postgres_s3|bool
+
+- name: copy restore script
+  become: yes
+  template:
+    src: "plain/restore_from_backup.sh.j2"
+    dest: "/usr/local/sbin/restore_from_backup.sh"
+    group: root
+    owner: root
+    mode: 0700
+    backup: yes
+  when: postgres_s3|bool

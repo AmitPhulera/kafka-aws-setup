@@ -1,0 +1,6 @@
+java_packages:
+  - openjdk-8-jdk
+  - openjdk-17-jdk
+java_bin_path: /usr/lib/jvm/java-8-openjdk-amd64/jre/bin
+
+# TODO: update arm64 with amd64

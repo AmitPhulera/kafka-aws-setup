@@ -1,0 +1,6 @@
+---
+- name: Install packages we would want on any machine ever
+  apt:
+    name:
+      - htop
+    state: present

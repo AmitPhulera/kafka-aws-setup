@@ -1,0 +1,5 @@
+---
+dependencies:
+  - {role: common_installs, tags: common_installs}
+  - {role: logrotate, tags: logging}
+  - role: edit

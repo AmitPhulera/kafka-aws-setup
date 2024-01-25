@@ -1,0 +1,15 @@
+- name: Remove disabled custom checks
+  file:
+    path: "/etc/datadog-agent/checks.d/{{ item.name }}.py"
+    state: absent
+  notify: restart datadog
+  when: not DATADOG_ENABLED or not item.enabled
+  loop: "{{ datadog_custom_integrations }}"
+
+- name: Remove datadog integration configs
+  file:
+    path: "/etc/datadog-agent/conf.d/{{ item.name }}.d/conf.yaml"
+    state: absent
+  notify: restart datadog
+  when: item is defined and not item.enabled or not DATADOG_ENABLED
+  with_items: "{{ datadog_integrations }}"

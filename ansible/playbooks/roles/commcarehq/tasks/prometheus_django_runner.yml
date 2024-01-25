@@ -1,0 +1,9 @@
+- name: Add django_bash_runner
+  become: yes
+  template:
+    src: "{{ supervisor_service_files.django_bash_runner.template }}"
+    dest: "{{ supervisor_service_files.django_bash_runner.file_path }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0644
+  when: supervisor_service_files.django_bash_runner.should_exist

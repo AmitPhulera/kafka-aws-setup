@@ -1,0 +1,16 @@
+- name: Copy Redis restart script
+  become: yes
+  file:
+    dest: "/usr/local/sbin/redis-restart.sh"
+    state: absent
+  tags: redis
+
+- name: Create Cron job
+  become: yes
+  cron:
+    name: "Reboot Redis"
+    job: "/usr/local/sbin/redis-restart.sh > /dev/null"
+    user: root
+    cron_file: ../crontab
+    state: absent
+  tags: redis

@@ -1,0 +1,13 @@
+- name: define management command services
+  become: yes
+  template:
+    src: "{{ supervisor_service_files.management_commands.template }}"
+    dest: "{{ supervisor_service_files.management_commands.file_path }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0644
+  when: supervisor_service_files.management_commands.should_exist
+  with_items:
+    - env_vars:
+        TMPDIR: '{{ encrypted_tmp }}'
+        PROMETHEUS_MULTIPROC_DIR: "{% if prometheus_monitoring_enabled|default(False) %}{{ metrics_home }}{% endif %}"

@@ -1,0 +1,11 @@
+- name: Send Keystore
+  become: yes
+  copy:
+    src: "{{ keystore_file }}"
+    dest: "{{ www_dir }}/DimagiKeyStore"
+    group: cchq
+    owner: cchq
+    mode: 0644
+    backup: yes
+    decrypt: yes
+  when: keystore_file is defined

@@ -1,0 +1,32 @@
+- name: Generating RSA key for {{ userFrom }} on {{ inventory_hostname }}
+  become: true
+  user:
+    name: "{{ userFrom }}"
+    generate_ssh_key: yes
+  when: state == 'present'
+
+- shell: "getent passwd {{ userFrom }} | cut -d: -f6"
+  become: true
+  check_mode: no
+  register: user_home
+
+- name: Downloading pub key from {{ inventory_hostname }}
+  become: true
+  fetch:
+    src: "{{ user_home.stdout }}/.ssh/id_rsa.pub"
+    dest: /tmp/id_rsa_{{inventory_hostname}}.tmp
+    flat: yes
+    fail_on_missing: yes
+
+- name: "{{ 'Add' if state == 'present' else 'Remove' }} public key on {{ hostTo }} for {{ userTo }}"
+  become: true
+  authorized_key:
+    user: "{{userTo}}"
+    state: "{{ state }}"
+    key: "{{ lookup('file', '/tmp/id_rsa_' + inventory_hostname + '.tmp') }}"
+  delegate_to: "{{ item }}"
+  ignore_errors: "{{ ansible_check_mode }}"
+  with_items: "{{ hostTo }}"
+
+- name: Deleting temp files
+  local_action: file path=/tmp/id_rsa_{{inventory_hostname}}.tmp state=absent

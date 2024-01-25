@@ -1,0 +1,164 @@
+- name: Hard file limits
+  become: yes
+  pam_limits:
+    domain: "{{ item }}"
+    limit_type: hard
+    limit_item: nofile
+    value: "{{ nofile_limit }}"
+  tags:
+    - nofile_limits
+  with_items:
+    - '*'
+    - 'root'
+
+- name: Soft file limits
+  become: yes
+  pam_limits:
+    domain: "{{ item }}"
+    limit_type: soft
+    limit_item: nofile
+    value: "{{ nofile_limit }}"
+  tags:
+    - nofile_limits
+  with_items:
+    - '*'
+    - 'root'
+
+- name: Ensure pam_limits.so
+  lineinfile:
+    dest: /etc/pam.d/common-session
+    state: present
+    regexp: "^session required pam_limits.so"
+    line: "session required pam_limits.so"
+  tags:
+    - nofile_limits
+
+- name: Ensure pam_limits.so non-interactive
+  lineinfile:
+    dest: /etc/pam.d/common-session-noninteractive
+    state: present
+    regexp: "^session required pam_limits.so"
+    line: "session required pam_limits.so"
+  tags:
+    - nofile_limits
+
+- name: set timezone to Etc/UTC
+  become: yes
+  timezone:
+    name: Etc/UTC
+  tags:
+    - timezone
+    - after-reboot
+
+- name: "Sets hostname"
+  become: yes
+  hostname:
+    name: "{{ hostname }}"
+  when: hostname is defined
+  tags:
+    - hostname
+    - after-reboot
+
+- name: "Sets /etc/hosts"
+  become: yes
+  lineinfile:
+    dest: /etc/hosts
+    regexp: '^{{ internal_ipv4.address }}\s'
+    line: "{{ internal_ipv4.address }} {{ alt_hostname|default(hostname) }}.{{ internal_domain_name }} {{ alt_hostname|default(hostname) }}{%if alt_hostname|default('') %} {{ hostname }}{% endif %}"
+  when: hostname is defined and hostname and internal_domain_name and not etc_hosts_lines|join(',') is search(internal_ipv4.address)
+  tags:
+    - hostname
+    - after-reboot
+
+- name: "Sets /etc/hosts (no internal_domain_name)"
+  become: yes
+  lineinfile:
+    dest: /etc/hosts
+    regexp: '^{{ ansible_default_ipv4.address }}\s'
+    line: '{{ ansible_default_ipv4.address }} {{ hostname }}'
+  when: hostname is defined and hostname and not internal_domain_name and not etc_hosts_lines|join(',') is search(ansible_default_ipv4.address)
+  tags:
+    - hostname
+    - after-reboot
+
+
+- name: "Custom host file lines"
+  lineinfile: dest=/etc/hosts regexp='^{{ item }}.*' line="{{item}}" state=present
+  with_items: "{{ etc_hosts_lines }}"
+  when: etc_hosts_lines is defined
+  tags:
+    - etc_hosts
+
+- name: "Add host file"
+  lineinfile: dest=/etc/hosts regexp='.*{{ item }}$' line="{{item}}" state=present
+  with_items:
+    - "{{ lookup('dig', inventory_hostname, wantlist=True)[0] }}\t\t{{ inventory_hostname }}"
+  tags:
+    - etc_hosts
+    - after-reboot
+  when: not inventory_hostname|ipaddr
+
+- name: "Remove lines from hosts file"
+  lineinfile: dest=/etc/hosts regexp='.*{{ item }}$' line="{{item}}" state=absent
+  with_items: "{{ etc_hosts_lines_removed }}"
+  when: etc_hosts_lines_removed is defined
+  tags:
+    - etc_hosts
+    - after-reboot
+
+- name: "RFC 2142 email aliases and forwarding"
+  become: yes
+  template:
+    src: etc_aliases.j2
+    dest: /etc/aliases
+    owner: root
+    group: root
+    mode: 0644
+    backup: yes
+  register: aliases
+  tags:
+    - postfix
+
+- name: "RFC 2142 email aliases and forwarding (update)"
+  become: yes
+  command: postalias /etc/aliases
+  when: aliases.changed
+  tags:
+    - postfix
+
+- name: "Set at.deny"
+  become: yes
+  template:
+    src: at.deny
+    dest: /etc/at.deny
+    owner: root
+    group: daemon
+    mode: 0640
+    backup: yes
+
+- name: "remove at.allow"
+  become: yes
+  file:
+    path: /etc/at.allow
+    state: absent
+
+- import_tasks: antivirus.yml
+  tags:
+    - antivirus
+    - after-reboot
+
+- import_tasks: cron.yml
+  tags: cron
+
+- import_tasks: mount.yml
+  tags:
+    - mount
+    - after-reboot
+
+- import_tasks: logging.yml
+  tags:
+    - logging
+
+- import_tasks: audit.yml
+  tags:
+    - audit

@@ -1,0 +1,230 @@
+- name: Make sure the log directory exists
+  import_tasks: roles/commcarehq/tasks/www_log_dir.yml
+
+- name: Install formplayer packages
+  become: yes
+  apt:
+    name:
+      - sqlite3
+      - libsqlite3-dev
+
+- name: Create purging cron jobs
+  become: yes
+  cron:
+    name: "{{ item.name }}"
+    special_time: daily
+    job: "/usr/sbin/tmpreaper {{ item.time_spec }} {{ item.dir }} --protect '{{ formplayer_access_log_dir }}'"
+    user: root
+    cron_file: purge_formplayer_files
+  with_items:
+    - {name: 'Purge sqlite db files', dir: '{{ formplayer_data_dir }}', time_spec: '{{ formplayer_purge_time_spec }}'}
+  tags:
+    - cron
+
+- name: Remove redundant purging cron jobs (cleanup)
+  become: yes
+  cron:
+    name: "{{ item.name }}"
+    cron_file: purge_formplayer_files
+    state: absent
+  with_items:
+    - {name: 'Purge temp files', dir: '/tmp', time_spec: '2d'}
+  tags:
+    - cron
+
+- name: Create cron job to delete empty sqlite db dirs
+  become: yes
+  cron:
+    name: 'Purge empty sqlite db dirs'
+    special_time: daily
+    # delete any empty directories so they don't just build up (to literally 100,000+)
+    # but leaving any that have been modified in the last 20m
+    # (to avoid a race condition on newly created dirs)
+    # Also never delete {{ formplayer_access_log_dir }}
+    job: 'find {{ formplayer_data_dir }} -path {{ formplayer_access_log_dir }} -prune -o -empty -type d -mmin +20 -delete'
+    user: '{{ cchq_user }}'
+    state: present
+  tags:
+    - cron
+
+
+- name: Copy formplayer's archive_dbs
+  become: yes
+  copy:
+    src: "archive_dbs.sh"
+    dest: "/usr/local/sbin/archive_dbs.sh"
+    group: "{{ cchq_user }}"
+    owner: "{{ cchq_user }}"
+    mode: 0700
+  tags:
+    - cron
+
+- name: Create cron job to archive sqlite db files
+  become: yes
+  cron:
+    # should run every minute by default
+    name: 'Archive sqlite db files'
+    job: '/usr/local/sbin/archive_dbs.sh {{ formplayer_data_dir }} +{{ formplayer_archive_time_spec|default(None) }}'
+    user: '{{ cchq_user }}'
+    state: '{{ "present" if formplayer_archive_time_spec is defined else "absent" }}'
+  tags:
+    - cron
+
+- name: Cleanup existing releases
+  block:
+  - name: List of releases
+    find:
+      paths="{{ formplayer_releases_base_dir }}"
+      file_type=directory
+    register: releases
+
+  - name: Get stats on current release
+    stat:
+      path="{{ formplayer_current_dir }}"
+    register: current_release
+
+  - name: Delete all releases except the current and most recent 2 releases
+    file:
+      path="{{ item.path }}"
+      state=absent
+    with_items:
+      - "{{ (releases.files | sort(attribute='ctime'))[:-2] }}"
+    when: item.path != current_release.stat.lnk_target
+  become: yes
+  tags:
+    - formplayer_deploy
+    - clean_releases
+
+- name: Formplayer build dir
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0755
+  tags:
+    - localsettings
+    - formplayer_deploy
+  with_items:
+    - "{{ formplayer_build_dir }}"
+    - "{{ [] if _should_update_formplayer_in_place else formplayer_release_dir }}"
+
+- name: Formplayer data dir
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0755
+  tags:
+    - localsettings
+    - formplayer_deploy
+  with_items:
+    - "{{ formplayer_data_dir }}"
+
+- name: Formplayer request-response logging directory
+  file:
+    path: "{{ formplayer_access_log_dir }}"
+    state: directory
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0755
+
+- name: Download formplayer release
+  get_url:
+    url: "{{ formplayer_build_url }}"
+    dest: "{{ _formplayer_target_dir }}/formplayer.jar"
+    mode: 0744
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+  tags:
+    - formplayer_deploy
+
+- name: Check if the "current" directory exists
+  stat:
+    path: "{{ formplayer_current_dir }}"
+  register: current_stat
+  tags:
+    - formplayer_deploy
+  when: not _should_update_formplayer_in_place
+
+# This task copies the respective config files from "current", if applicable
+# so that the next task prints out a nice diff instead of the full contents of the file
+- name: Copy formplayer config files from current release
+  become: yes
+  copy:
+    remote_src: yes
+    src: "{{ formplayer_current_dir }}/{{ item.filename }}"
+    dest: "{{ formplayer_release_dir }}/{{ item.filename }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0644
+  with_items:
+    - filename: application.properties
+    - filename: logback-spring.xml
+  tags:
+    - formplayer_deploy
+  when: not _should_update_formplayer_in_place and current_stat.stat.exists
+
+- name: Update formplayer config files
+  become: yes
+  template:
+    src: "{{ item.template }}"
+    dest: "{{ _formplayer_target_dir }}/{{ item.filename }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0644
+  with_items:
+    - template: application.properties.j2
+      filename: application.properties
+    - template: logback-spring.xml.j2
+      filename: logback-spring.xml
+  tags:
+    - localsettings
+    - formplayer_deploy
+
+# This should be the last task in the formplayer release process
+# (and the last one tagged with `formplayer_deploy`)
+# so that if setting up a release fails, `current` never gets linked to it
+# giving us nearly atomic formplayer deploys
+- name: Link formplayer jar
+  become: yes
+  file:
+    state: link
+    src: "{{ formplayer_release_dir }}"
+    path: "{{ formplayer_current_dir }}"
+    mode: 0755
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+  tags:
+    - formplayer_deploy
+  when: not _should_update_formplayer_in_place
+
+
+- name: Formplayer monit config
+  become: yes
+  template:
+    src: "monit.formplayer.j2"
+    dest: "/etc/monit/conf.d/formplayer"
+    group: root
+    owner: root
+    mode: 0640
+  notify: reload monit
+  tags: monit
+  when: use_monit_for_formplayer|bool
+
+- meta: flush_handlers
+
+# NOTE: this check currently fails because of a bug in community.general.monit
+# A PR has been made to fix this, and we can uncomment this once that is merged/released
+# https://github.com/ansible-collections/community.general/pull/1532
+#- community.general.monit:
+#    name: formplayer
+#    state: monitored
+#  tags: monit
+#  ignore_errors: "{{ ansible_check_mode }}"
+#  register: result
+#  until: not result.failed or 'process not presently configured with monit' not in result.msg
+#  retries: 5
+#  delay: 20
+

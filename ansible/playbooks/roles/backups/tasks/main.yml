@@ -1,0 +1,117 @@
+# todo:  The backups code doesn't really logically handle what happens when more than one
+# todo:  server hosts a service, because it runs the same backup code on all of them,
+# todo:  which depending on the service is either redundant (backup happens multiple times)
+# todo:  or conflicting (shards uploaded to the same place, overwrite each other)
+# todo:  I don't know the implications of this, possibly currently only used on monoliths.
+
+- name: Set up aws credentials
+  become: yes
+  import_role:
+    name: backups
+    tasks_from: set_up_aws_credentials.yml
+  vars:
+    s3_user: "{{ blobdb_user }}"
+    s3_user_home_dir: "~{{ blobdb_user }}"
+  when: blobdb_s3|bool
+  tags:
+    - cron
+    - backups
+
+
+- name: Create blobdb backup dir
+  become: yes
+  file:
+    path: "{{ blobdb_backup_dir }}"
+    state: directory
+    mode: 0700
+    group: "{{ blobdb_user }}"
+    owner: "{{ blobdb_user }}"
+  when: "backup_blobdb and 'shared_dir_host' in group_names"
+  tags:
+    - cron
+    - backups
+
+- name: Copy blobdb backup script
+  become: yes
+  template:
+    src: "create_blobdb_backup.sh.j2"
+    dest: "/usr/local/sbin/create_blobdb_backup.sh"
+    group: "{{ blobdb_user }}"
+    owner: "{{ blobdb_user }}"
+    mode: 0700
+    backup: yes
+  when: "backup_blobdb and 'shared_dir_host' in group_names"
+  tags:
+    - cron
+    - backups
+
+- name: Create Daily Cron job
+  become: yes
+  cron:
+    name: "Backup blobdb daily"
+    job: "/usr/local/sbin/create_blobdb_backup.sh daily {{ blobdb_backup_days }}"
+    minute: 0
+    hour: "{{ nadir_hour|default(0) }}"
+    weekday: "1,2,3,4,5,6"
+    user: "{{ blobdb_user }}"
+    cron_file: backup_blobdb
+    state: "{{ 'present' if backup_blobdb and 'shared_dir_host' in group_names else 'absent' }}"
+  tags:
+    - cron
+    - backups
+
+- name: Create Hourly Cron job
+  become: yes
+  cron:
+    name: "Backup blobdb hourly"
+    job: "/usr/local/sbin/create_blobdb_backup.sh hourly {{ blobdb_backup_hours * 60 }}"
+    minute: 15
+    hour: "*/{{ nadir_hour_frequency|default(3) }}"
+    weekday: "1,2,3,4,5,6"
+    user: "{{ blobdb_user }}"
+    cron_file: backup_blobdb
+    state: "{{ 'present' if backup_blobdb and blobdb_backup_hourly and 'shared_dir_host' in group_names else 'absent' }}"
+  tags:
+    - cron
+    - backups
+
+- name: Create Weekly Cron job
+  become: yes
+  cron:
+    name: "Backup blobdb weekly"
+    job: "/usr/local/sbin/create_blobdb_backup.sh weekly {{ blobdb_backup_weeks * 7 }}"
+    minute: 0
+    hour: "{{ nadir_hour|default(0) }}"
+    weekday: 0
+    user: "{{ blobdb_user }}"
+    cron_file: backup_blobdb
+    state: "{{ 'present' if backup_blobdb and 'shared_dir_host' in group_names else 'absent' }}"
+  tags:
+    - cron
+    - backups
+
+- name: Copy s3 upload script
+  become: yes
+  template:
+    src: "backup_snapshots.py.j2"
+    dest: "/usr/local/sbin/backup_snapshots.py"
+    group: root
+    owner: root
+    mode: 0755
+    backup: yes
+  when: postgres_s3 or couch_s3 or blobdb_s3
+  tags:
+    - cron
+    - backups
+
+
+- name: Set up check_s3_backups
+  become: yes
+  import_role:
+    name: backups
+    tasks_from: set_up_check_s3_backups.yml
+  vars:
+    service: 'blobdb'
+    condition: "{{ check_s3_backups_email and blobdb_s3 and backup_blobdb and 'shared_dir_host' in group_names }}"
+    user: "{{ blobdb_user }}"
+    service_backup_dir: "{{ blobdb_backup_dir }}"

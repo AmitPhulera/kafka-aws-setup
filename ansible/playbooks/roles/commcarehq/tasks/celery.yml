@@ -1,0 +1,39 @@
+# Note: Make sure to add queues with associated tasks to the solo_queues list in
+# validate_app_processes_config(), in app_processes.py, so they don't share a process with another queue.
+
+- name: Add celery_bash_runner files
+  template:
+    src: "{{ supervisor_service_files.celery_bash_runner.template }}"
+    dest: "{{ supervisor_service_files.celery_bash_runner.file_path }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0644
+  when: supervisor_service_files.celery_bash_runner.should_exist
+
+- name: define special celery services
+  template:
+    src: "{{ item.template }}"
+    dest: "{{ item.file_path }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0600
+  when: item.should_exist
+  with_items:
+    - "{{ supervisor_service_files.celery_flower }}"
+    - "{{ supervisor_service_files.celery_beat }}"
+
+- name: define celery workers
+  template:
+    src: "{{ supervisor_service_files.celery_workers.template }}"
+    dest: "{{ supervisor_service_files.celery_workers.file_path }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0644
+  when: supervisor_service_files.celery_workers.should_exist
+  with_items:
+    - env_vars:
+        http_proxy: "{% if http_proxy_address is defined %}http://{{ http_proxy_address }}:{{ http_proxy_port }}{% endif %}"
+        https_proxy: "{% if http_proxy_address is defined %}https://{{ http_proxy_address }}:{{ http_proxy_port }}{% endif %}"
+        no_proxy: "{% if http_proxy_address is defined %}{{ groups['all'] | join(',') }},{{ app_processes_config.additional_no_proxy_hosts }}{% endif %}"
+        PROMETHEUS_PUSHGATEWAY_HOST: "{% if prometheus_celery_pushgateway is defined %}{{ prometheus_celery_pushgateway }}{% endif %}"
+        TMPDIR: '{{ encrypted_tmp }}'

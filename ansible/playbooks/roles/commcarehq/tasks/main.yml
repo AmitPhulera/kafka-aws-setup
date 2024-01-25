@@ -1,0 +1,164 @@
+# If "pull CommCare HQ source" fails with any of these messages
+# - fatal: destination path '/home/cchq/www/dev/code_root' already exists and is not an empty directory.
+# - /home/cchq/www/dev/code_root/.git: Permission denied
+# Uncomment these lines
+#- name: delete staticfiles
+#  become: yes
+#  file:
+#    path: "{{ code_home }}"
+#    state: absent
+
+- import_tasks: www_log_dir.yml
+  tags: logging
+
+- name: install apt requirements for machines running hq code
+  apt:
+    name:
+      - libxml2-dev
+      - libxmlsec1-dev
+      - libxmlsec1-openssl
+      - pkg-config
+  tags:
+    - hq-apt-requirements
+
+- name: set correct permission on /home/cchq
+  become: yes
+  file:
+    path: "{{ cchq_home }}"
+    owner: cchq
+    group: cchq
+
+- name: add deploy keys
+  become: yes
+  copy:
+    src: "{{ env_files_dir }}/{{ item.key }}"
+    dest: "{{ cchq_home }}/.ssh/{{ item.value }}"
+    owner: cchq
+    group: cchq
+    mode: 0600
+  loop: "{{ deploy_keys|dict2items }}"
+  when: deploy_keys is defined
+
+- name: Force GIT SSH to use port 443
+  become: yes
+  become_user: "{{ cchq_user }}"
+  blockinfile:
+    dest: "{{ cchq_home }}/.ssh/config"
+    create: yes
+    block: |
+      Host github.com
+        Hostname ssh.github.com
+        Port 443
+
+- name: create required directories
+  become: yes
+  file:
+    path: "{{ item }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0755
+    state: directory
+  with_items:
+    - "{{ code_releases }}"
+
+- name: create required directories
+  become: yes
+  file:
+    path: "{{ item }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0777
+    state: directory
+  with_items:
+    - "{{ service_home }}"
+  tags: services
+
+- name: check for existing release (via localsettings.py)
+  stat: path="{{ code_home }}/localsettings.py"
+  register: current_localsettings
+
+- name: allow git file transport
+  command: 'git config --global protocol.file.allow always'
+  become: yes
+  become_user: "{{ cchq_user }}"
+
+- name: Clone source repositories
+  when: not current_localsettings.stat.exists
+  block:
+  - name: Clone CommCare source repository
+    # This also creates the virtualenv when initializing a new machine
+    include_tasks: git_repository.yml
+    loop:
+      - url: "{{ commcarehq_repository }}"
+        version: "{{ commcarehq_version }}"
+        requirements_path: "requirements/prod-requirements.txt"
+
+  - name: Link source to code_home
+    become: true
+    file:
+      state: link
+      src: "{{ code_source }}"
+      dest: "{{ code_home }}"
+      owner: "{{ cchq_user }}"
+      group: "{{ cchq_user }}"
+
+- name: copy localsettings
+  become: true
+  template:
+    src: localsettings.py.j2
+    dest: "{{ code_home }}/localsettings.py"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0600
+  tags:
+    - localsettings
+    - hq-localsettings
+
+- name: Setup python_env
+  become: true
+  become_user: "{{ cchq_user }}"
+  vars:
+    virtualenv_name: python_env-{{ python_version }}
+    virtualenv_path: "{{ code_home }}/{{ virtualenv_name }}"
+  tags:
+    - python
+  block:
+  - name: check for virtualenv
+    stat: path="{{ virtualenv_path }}"
+    register: virtualenv_dir
+
+  - name: Create virtualenv for new Python version
+    become: true
+    pip:
+      name:
+        - pip
+        - setuptools
+      state: latest
+      virtualenv: "{{ virtualenv_path }}"
+      virtualenv_python: "{{ python_name }}"
+    when: not virtualenv_dir.stat.exists
+
+  - name: install pip requirements if "python" tag specified
+    become: true
+    pip:
+      requirements: "{{ code_home }}/requirements/prod-requirements.txt"
+      virtualenv: "{{ virtualenv_path }}"
+      chdir: "{{ code_home }}"
+    tags:
+      - never  # means only when the 'python' tag is specified
+    when: not testing|default(False)
+
+  - name: create "python_env" symlink
+    # All references to the virtualenv should be made using this symlink. This
+    # allows Python to be upgraded without having to change other parts of the
+    # system (e.g., supervisor configs).
+    #
+    # Direct references to .../python_env-3.6 are allowed since the symlink may
+    # not exist in Python 3.6 environments.
+    file:
+      src: "{{ virtualenv_name }}"
+      dest: "{{ virtualenv_home }}"
+      state: link
+      force: True
+    tags:
+      - services

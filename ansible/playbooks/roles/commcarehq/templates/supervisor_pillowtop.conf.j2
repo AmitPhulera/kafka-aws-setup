@@ -1,0 +1,32 @@
+{% for pillow_name, params in app_processes_config.pillows[inventory_hostname].items() %}
+{% for num_process in range(params.get('start_process', 0), params.get('start_process', 0) + params.get('num_processes', 1)) %}
+
+[program:commcare-hq-{{ deploy_env }}-pillowtop-{{ pillow_name }}-{{ num_process }}]
+environment={% for name, value in item.env_vars.items() %}{% if value %}{{ name }}="{{ value }}",{% endif %}{% endfor %}
+
+command={{ django_bash_runner if prometheus_monitoring_enabled else django_direct_runner }} run_ptop
+    --pillow-name {{ pillow_name }}
+    --num-processes={{ params.get('total_processes', params.get('num_processes', 1)) }}
+    --process-number={{ num_process }}
+    {% if params.get('dedicated_migration_process') %}--dedicated-migration-process{% endif %}
+    {% if params.get('processor_chunk_size') %}--processor-chunk-size={{params.get('processor_chunk_size')}}{% endif %}
+    {% if params.get('exclude_ucrs') %}--exclude-ucrs={{params.get('exclude_ucrs') | join(", ") }}{% endif %}
+
+directory={{ code_home }}
+user=cchq
+numprocs=1
+autostart=true
+autorestart=true
+stdout_logfile={{ log_home }}/pillowtop-{{ pillow_name }}-{{ num_process }}.log
+redirect_stderr=true
+stderr_logfile={{ log_home }}/pillowtop-{{ pillow_name }}-{{ num_process }}.error.log
+startsecs=10
+; Need to wait for currently executing tasks to finish at shutdown.
+; Increase this if you have very long running tasks.
+stopwaitsecs = 120
+; if rabbitmq is supervised, set its priority higher
+; so it starts first
+priority=998
+
+{% endfor %}
+{% endfor %}

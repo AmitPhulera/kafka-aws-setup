@@ -1,0 +1,10 @@
+# Tasks to be run on machines running django
+
+- name: Remove old cron jobs
+  become: yes
+  cron:
+    name: "Purge old restore payload files"
+    user: "{{ cchq_user }}"
+    state: absent
+  tags:
+    - shared_files

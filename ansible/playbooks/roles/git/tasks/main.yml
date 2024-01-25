@@ -1,0 +1,16 @@
+- name: Add git apt repo
+  apt_repository: repo='ppa:git-core/ppa' state=present
+  register: add_git_repo
+
+- name: Update package list
+  apt: update_cache=yes
+  when: add_git_repo is changed
+
+- name: Install git packages
+  become: yes
+  apt:
+    name:
+      - git
+    state: latest
+  tags:
+    - install_git

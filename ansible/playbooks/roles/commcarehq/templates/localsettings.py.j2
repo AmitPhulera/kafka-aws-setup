@@ -1,0 +1,1181 @@
+#
+# {{ ansible_managed }}
+#
+
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+
+from datetime import time
+import hashlib
+import json
+import os
+import sys
+
+from celery.schedules import crontab
+
+_ROOT_DIR  = os.path.dirname(os.path.abspath(__file__))
+
+ALLOWED_HOSTS = {{ (localsettings.ALLOWED_HOSTS|default([]) + ALTERNATE_HOSTS + [SITE_HOST, 'localhost', '127.0.0.1'] + groups.proxy + groups.proxy | map('extract', hostvars, 'ansible_host') | map('default', 'localhost') | list + groups.proxy | map('extract', hostvars, 'public_ip') | map('default', 'localhost') | list) | unique | to_json }}
+
+{% if SEPARATE_SYNCLOGS_DB %}
+SYNCLOGS_SQL_DB_ALIAS = "synclogs"
+{% else %}
+SYNCLOGS_SQL_DB_ALIAS = "default"
+{% endif %}
+
+DATABASES = { {% for config in postgresql_dbs.all %}
+{%- if config.django_alias %}
+    '{{config.django_alias}}': {
+        'ENGINE': 'django.db.backends.postgresql_psycopg2',
+        'NAME': '{{ config.name }}',
+        'USER': '{{ config.user }}',
+        'PASSWORD': '{{ config.password }}',
+        'HOST': '{% if config.pgbouncer_endpoint == inventory_hostname %}127.0.0.1{% else %}{{ config.pgbouncer_endpoint }}{% endif %}',
+        'PORT': {{ config.port }},
+        'OPTIONS': {{ config.options|to_json }},
+        'DISABLE_SERVER_SIDE_CURSORS': True,
+        {% if not config.django_migrate -%}
+        'MIGRATE': False,
+        {% endif -%}
+        {% if config.get('master') -%}
+        'STANDBY': {
+            'MASTER': '{{ config.master }}',
+            'ACCEPTABLE_REPLICATION_DELAY': {{ config.acceptable_replication_delay }},
+        }
+    {% endif -%}
+        {% if postgresql_dbs.form_processing and config.get('shards') -%}
+        'PLPROXY': {
+            'SHARDS': {{config.shards|to_json}},
+        }
+    {% elif postgresql_dbs.form_processing and config.name == postgresql_dbs.form_processing.proxy.name -%}
+        'PLPROXY': {
+            'PROXY': True,
+        }
+    {% elif postgresql_dbs.form_processing and config.name == postgresql_dbs.form_processing.proxy_standby.name -%}
+        'PLPROXY': {
+            'PROXY_FOR_STANDBYS': True,
+        }
+    {% endif -%}
+    },
+{% endif -%}
+{% endfor %}
+}
+
+USE_PARTITIONED_DATABASE = {{ SEPARATE_FORM_PROCESSING_DBS }}
+
+REPORTING_DATABASES = json.loads('{{ REPORTING_DATABASES|to_json }}')
+
+LOAD_BALANCED_APPS = json.loads('{{ LOAD_BALANCED_APPS|to_json|default({}) }}')
+
+LOG_HOME = '{{ log_home }}'
+COUCH_LOG_FILE = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-commcarehq.couch.log")
+DJANGO_LOG_FILE = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-commcarehq.django.log")
+ACCOUNTING_LOG_FILE = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-commcarehq.accounting.log")
+ANALYTICS_LOG_FILE = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-commcarehq.analytics.log")
+DATADOG_LOG_FILE = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-commcarehq.datadog.log")
+EXPORT_MIGRATION_LOG_FILE = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-export_migration.log")
+UCR_TIMING_FILE = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-ucr_timing.log")
+UCR_DIFF_FILE = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-ucr_diff.log")
+UCR_EXCEPTION_FILE = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-ucr_exception.log")
+MAIN_COUCH_SQL_DATAMIGRATION = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-couch_sql_migration.log")
+SESSION_ACCESS_LOG_FILE = os.path.join(LOG_HOME,"{{ localsettings.DEPLOY_MACHINE_NAME }}-session_access_log.log")
+
+# Shared Drive Setup
+{% if shared_drive_enabled %}
+SHARED_DRIVE_ROOT = '{{ shared_mount_dir }}'
+{% else %}
+SHARED_DRIVE_ROOT = '{{ shared_data_dir }}'
+{% endif %}
+RESTORE_PAYLOAD_DIR_NAME = '{{ restore_payload_dir_name }}'
+TRANSFER_FILE_DIR_NAME = '{{ transfer_payload_dir_name }}'
+SHARED_TEMP_DIR_NAME = '{{ shared_temp_dir_name }}'
+TRANSFER_SERVER = 'nginx'
+
+
+# Email setup
+# email settings: these ones are the custom hq ones
+{% if not EMAIL_LOGIN %}
+EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend'
+EMAIL_FILE_PATH = '/tmp/django_email'
+{% else %}
+EMAIL_LOGIN = "{{ EMAIL_LOGIN }}"
+{% if EMAIL_PASSWORD %}
+EMAIL_PASSWORD = "{{ EMAIL_PASSWORD }}"
+{% else %}
+# This prevents django from attempting smtp auth for servers where it is not configured
+EMAIL_PASSWORD = None
+{% endif %}
+EMAIL_SMTP_HOST = "{{ localsettings.EMAIL_SMTP_HOST }}"
+EMAIL_SMTP_PORT = {{ localsettings.EMAIL_SMTP_PORT }}
+{% endif %}
+{% if not localsettings.EMAIL_SMTP_HOST %}
+EMAIL_BACKEND='django.core.mail.backends.console.EmailBackend'
+{% endif %}
+
+RETURN_PATH_EMAIL_PASSWORD = "{{ RETURN_PATH_EMAIL_PASSWORD }}"
+
+{% if 'SES_CONFIGURATION_SET' in localsettings %}
+SES_CONFIGURATION_SET = "{{ localsettings.SES_CONFIGURATION_SET }}"
+{% endif %}
+{% if 'SES_CONFIGURATION_SET' in localsettings %}
+SNS_EMAIL_EVENT_SECRET = "{{ localsettings.SNS_EMAIL_EVENT_SECRET }}"
+{% endif %}
+
+EMAIL_SUBJECT_PREFIX = '[{{ env_monitoring_id }}] '
+
+ENABLE_SOFT_ASSERT_EMAILS = {{ localsettings.ENABLE_SOFT_ASSERT_EMAILS|default(False) }}
+IS_DIMAGI_ENVIRONMENT = {{ localsettings.IS_DIMAGI_ENVIRONMENT|default(False) }}
+
+SERVER_ENVIRONMENT = '{{ env_monitoring_id }}'
+
+XFORMS_FORM_TRANSLATE_JAR = os.path.join(_ROOT_DIR, "lib", "form_translate.jar")
+
+#COUCH SETUP
+COUCH_DATABASES = {
+{% for alias, config in couch_dbs.items() %}
+    '{{ alias }}': {
+        'COUCH_HTTPS': {{ config.is_https }},
+        'COUCH_SERVER_ROOT': '{{ config.host }}:{{ config.port }}',
+        'COUCH_USERNAME': '{{ config.username }}',
+        'COUCH_PASSWORD': '{{ config.password }}',
+        'COUCH_DATABASE_NAME': '{{ config.name }}',
+    },
+{% endfor %}
+}
+
+{% if 'CUSTOM_SYNCLOGS_DB' in localsettings %}
+CUSTOM_SYNCLOGS_DB = '{{ localsettings.CUSTOM_SYNCLOGS_DB }}'
+{% endif %}
+
+{% if 'BIGCOUCH' in localsettings %}
+BIGCOUCH = '{{ localsettings.BIGCOUCH }}'
+{% endif %}
+
+{% if 'BIGCOUCH_QUORUM_COUNT' in localsettings %}
+BIGCOUCH_QUORUM_COUNT = '{{ localsettings.BIGCOUCH_QUORUM_COUNT }}'
+{% endif %}
+
+{% if 'COMMCARE_ANALYTICS_HOST' in localsettings %}
+COMMCARE_ANALYTICS_HOST = '{{ localsettings.COMMCARE_ANALYTICS_HOST }}'
+{% endif %}
+
+{% if 'COUCH_CACHE_DOCS' in localsettings %}
+COUCH_CACHE_DOCS = '{{ localsettings.COUCH_CACHE_DOCS }}'
+{% endif %}
+{% if 'COUCH_CACHE_VIEWS' in localsettings %}
+COUCH_CACHE_VIEWS = '{{ localsettings.COUCH_CACHE_VIEWS }}'
+{% endif %}
+{% if 'COUCH_REINDEX_SCHEDULE' in localsettings %}
+COUCH_REINDEX_SCHEDULE = {{ localsettings.COUCH_REINDEX_SCHEDULE }}
+{% endif %}
+
+{% if 'STAGING_DOMAINS' in localsettings %}
+STAGING_DOMAINS = {{ localsettings.STAGING_DOMAINS }}
+{% endif %}
+
+{% if DROPBOX_APP_NAME and DROPBOX_KEY %}
+DROPBOX_APP_NAME = '{{ DROPBOX_APP_NAME }}'
+{% endif %}
+
+{% if DROPBOX_KEY %}
+DROPBOX_KEY = '{{ DROPBOX_KEY }}'
+{% endif %}
+
+{% if DROPBOX_SECRET %}
+DROPBOX_SECRET = '{{ DROPBOX_SECRET }}'
+{% endif %}
+
+{% if AMAZON_S3_ACCESS_KEY %}
+S3_ACCESS_KEY = '{{ AMAZON_S3_ACCESS_KEY }}'
+{% endif %}
+{% if AMAZON_S3_SECRET_KEY %}
+S3_SECRET_KEY = '{{ AMAZON_S3_SECRET_KEY }}'
+{% endif %}
+
+{% if s3_blob_db_enabled %}
+S3_BLOB_DB_SETTINGS = {
+    'url': '{{ s3_blob_db_url }}',
+    'access_key': {% if s3_blob_db_access_key %}'{{ s3_blob_db_access_key }}'{% else %}None{% endif %},
+    'secret_key': {% if s3_blob_db_secret_key %}'{{ s3_blob_db_secret_key }}'{% else %}None{% endif %},
+    's3_bucket': '{{ s3_blob_db_s3_bucket }}',
+    'bulk_delete_chunksize': {{ s3_bulk_delete_chunksize }},
+    'config': {'signature_version': 's3v4'},
+}
+{% if localsettings.get('BLOB_DB_MIGRATING_FROM_S3_TO_S3', False) %}
+OLD_S3_BLOB_DB_SETTINGS = {
+    'url': '{{ old_s3_blob_db_url }}',
+    'access_key': {% if old_s3_blob_db_access_key %}'{{ old_s3_blob_db_access_key }}'{% else %}None{% endif %},
+    'secret_key': {% if old_s3_blob_db_secret_key %}'{{ old_s3_blob_db_secret_key }}'{% else %}None{% endif %},
+    's3_bucket': '{{ old_s3_blob_db_s3_bucket }}',
+    'bulk_delete_chunksize': {{ old_s3_bulk_delete_chunksize }},
+    'config': {'signature_version': 's3v4'},
+}
+BLOB_DB_MIGRATING_FROM_S3_TO_S3 = {{ localsettings.BLOB_DB_MIGRATING_FROM_S3_TO_S3 }}
+{% endif %}
+{% if 'BLOB_DB_MIGRATING_FROM_FS_TO_S3' in localsettings %}
+BLOB_DB_MIGRATING_FROM_FS_TO_S3 = {{ localsettings.BLOB_DB_MIGRATING_FROM_FS_TO_S3 }}
+{% endif %}
+{% endif %}{# s3_blob_db_enabled #}
+
+{% if MOBILE_INTEGRATION_TEST_TOKEN %}
+MOBILE_INTEGRATION_TEST_TOKEN = '{{ MOBILE_INTEGRATION_TEST_TOKEN }}'
+{% endif %}
+
+####### For Constructing Global URLs ########
+
+LOCAL_APPS = (
+    'dimagi.utils',
+    'gunicorn',
+    {% for entry in localsettings.LOCAL_APPS|default([]) %}
+    {% if entry.host == 'all' or inventory_hostname in groups[entry.host] %}
+    '{{ entry.name }}',
+    {% endif %}
+    {% endfor %}
+)
+{% if 'DATADOG_TRACE' in localsettings %}
+DATADOG_TRACE = json.loads('{{ localsettings.DATADOG_TRACE|to_json }}')
+{% endif %}
+
+{% if 'LOCAL_PILLOWS' in localsettings %}
+LOCAL_PILLOWTOPS = {
+{% for group, pillows in localsettings.LOCAL_PILLOWS.items() %}
+    "{{ group }}": [
+{% for pillow in pillows %}
+        {
+            "name": "{{ pillow.name }}",
+            "class": "{{ pillow.class }}",
+            "instance": "{{ pillow.instance }}",
+{% if pillow.params is defined %}
+            "params": json.loads('{{ pillow.params|to_json }}')
+{% endif %}
+        },
+{% endfor %}
+    ]
+{% endfor %}
+}
+{% endif %}
+
+{% if 'RUN_FORM_META_PILLOW' in localsettings %}
+RUN_FORM_META_PILLOW = {{ localsettings.RUN_FORM_META_PILLOW }}
+{% endif %}
+{% if 'RUN_CASE_SEARCH_PILLOW' in localsettings %}
+RUN_CASE_SEARCH_PILLOW = {{ localsettings.RUN_CASE_SEARCH_PILLOW }}
+{% endif %}
+{% if 'RUN_UNKNOWN_USER_PILLOW' in localsettings %}
+RUN_UNKNOWN_USER_PILLOW = {{ localsettings.RUN_UNKNOWN_USER_PILLOW }}
+{% endif %}
+
+{% if BITLY_OAUTH_TOKEN %}
+BITLY_OAUTH_TOKEN = '{{ BITLY_OAUTH_TOKEN }}'
+{% else %}
+BITLY_LOGIN = '{{ BITLY_LOGIN }}'
+BITLY_APIKEY = '{{ BITLY_APIKEY }}'
+{% endif %}
+
+#xep
+#GET_URL_BASE  = 'dimagi.utils.web.get_secure_url_base'
+REFLEXIVE_URL_BASE = "https://localhost:8001"
+def get_url_base():
+    return REFLEXIVE_URL_BASE
+GET_URL_BASE  = 'settings.get_url_base'
+EDITOR_URL = 'http://localhost:8011/xep/initiate/'
+
+{% if 'USER_REPORTING_METADATA_UPDATE_FREQUENCY_HOURS' in localsettings %}
+USER_REPORTING_METADATA_UPDATE_FREQUENCY = {{ localsettings.USER_REPORTING_METADATA_UPDATE_FREQUENCY_HOURS }} * 60
+{% endif %}
+{% if 'USER_REPORTING_METADATA_BATCH_ENABLED' in localsettings %}
+USER_REPORTING_METADATA_BATCH_ENABLED = {{ localsettings.USER_REPORTING_METADATA_BATCH_ENABLED }}
+{% endif %}
+{% if 'USER_REPORTING_METADATA_BATCH_SCHEDULE' in localsettings %}
+USER_REPORTING_METADATA_BATCH_SCHEDULE = {{ localsettings.USER_REPORTING_METADATA_BATCH_SCHEDULE }}
+{% endif %}
+
+SMS_QUEUE_ENABLED = {{localsettings.get('SMS_QUEUE_ENABLED', False)}}
+REMINDERS_QUEUE_ENABLED = {{localsettings.get('REMINDERS_QUEUE_ENABLED', False)}}
+
+PILLOW_RETRY_QUEUE_ENABLED = True
+
+
+SMS_BACKENDS = {
+    "1" : "MOBILE_BACKEND_TROPO_US",
+    "265" : "MOBILE_BACKEND_TROPO_CANADIAN",
+}
+
+{% if 'SYNC_CASE_FOR_MESSAGING_ON_SAVE' in localsettings %}
+SYNC_CASE_FOR_MESSAGING_ON_SAVE = {{ localsettings.SYNC_CASE_FOR_MESSAGING_ON_SAVE }}
+{% endif %}
+
+{% if 'MEDIA_ROOT' in localsettings and localsettings.MEDIA_ROOT %}
+MEDIA_ROOT = '{{ localsettings.MEDIA_ROOT }}'
+{% else %}
+MEDIA_ROOT = os.path.join(_ROOT_DIR,'mediafiles') #media for user uploaded media.  in general this won't be used at all.
+{% endif %}
+{% if 'STATIC_ROOT' in localsettings and localsettings.STATIC_ROOT %}
+STATIC_ROOT = '{{ localsettings.STATIC_ROOT }}'
+{% else %}
+STATIC_ROOT = os.path.join(_ROOT_DIR,'staticfiles')
+{% endif %}
+{% if 'STATIC_CDN' in localsettings %}
+STATIC_CDN = '{{ localsettings.STATIC_CDN }}'
+{% endif %}
+DEBUG = False
+TEMPLATE_DEBUG = DEBUG
+LESS_DEBUG = DEBUG
+
+ADMINS = (('HQ Dev Team', '{{ server_admin_email }}'),)
+SEND_BROKEN_LINK_EMAILS = True
+
+OVERRIDE_LOCATION = "https://www.commcarehq.org"
+DEFAULT_PROTOCOL = "https"
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTOCOL', 'https')
+
+ANALYTICS_IDS = {
+    'GOOGLE_ANALYTICS_API_ID': '{{ GOOGLE_ANALYTICS_API_ID }}',
+    'HUBSPOT_API_ID': '{{ HUBSPOT_API_ID }}',
+    'HUBSPOT_API_KEY': '{{ HUBSPOT_API_KEY }}',
+    'HUBSPOT_ACCESS_TOKEN': '{{ HUBSPOT_ACCESS_TOKEN }}',
+    'KISSMETRICS_KEY': '{{ KISSMETRICS_KEY }}',
+    'FULLSTORY_ID': '{{ FULLSTORY_ID }}',
+    'DRIFT_ID': '{{ DRIFT_ID }}',
+    'APPCUES_ID': '{{ APPCUES_ID }}',
+    'APPCUES_KEY': '{{ APPCUES_KEY }}'
+}
+
+GOOGLE_OAUTH_CONFIG = {
+    "web": {
+        "client_id": '{{ GOOGLE_OAUTH_CLIENT_ID }}',
+        "project_id": '{{ GOOGLE_OAUTH_PROJECT_ID }}',
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_secret": '{{ GOOGLE_OAUTH_CLIENT_SECRET }}'
+    }
+}
+
+ANALYTICS_CONFIG = {
+    'HQ_INSTANCE': '{{ localsettings.HQ_INSTANCE }}',
+    'DEBUG': {{ localsettings.ANALYTICS_DEBUG|default(False) }},
+    'LOG_LEVEL': '{{ localsettings.ANALYTICS_LOG_LEVEL|default('') }}',
+}
+
+EULA_COMPLIANCE = {{ localsettings.EULA_COMPLIANCE|default(False) }}
+
+NEW_DOMAIN_RECIPIENTS = ['{{ new_domain_email }}']
+
+CUSTOM_REPORT_MAP = {
+    "pathfinder": [
+        'pathfinder.models.PathfinderHBCReport',
+        'pathfinder.models.PathfinderProviderReport',
+        'pathfinder.models.PathfinderWardSummaryReport',
+    ]
+}
+
+CELERY_FLOWER_URL = '{{ CELERY_FLOWER_URL }}'
+{% if 'CELERY_TIMEZONE' in localsettings and localsettings.CELERY_TIMEZONE %}
+CELERY_TIMEZONE = '{{ localsettings.CELERY_TIMEZONE }}'
+{% endif %}
+
+{% if 'CAPTCHA_LENGTH' in localsettings and localsettings.CAPTCHA_LENGTH %}
+CAPTCHA_LENGTH = {{ localsettings.CAPTCHA_LENGTH }}
+{% endif %}
+
+{% if 'CAPTCHA_CHALLENGE_FUNCT' in localsettings and localsettings.CAPTCHA_CHALLENGE_FUNCT %}
+CAPTCHA_CHALLENGE_FUNCT = '{{ localsettings.CAPTCHA_CHALLENGE_FUNCT }}'
+{% endif %}
+
+PREVIEWER_RE = r'^(.*@dimagi\.com|.*@valuelabs\.in)$'
+GMAPS_API_KEY = '{{ GMAPS_API_KEY }}'
+MAPBOX_ACCESS_TOKEN = '{{ MAPBOX_ACCESS_TOKEN }}'
+FORMTRANSLATE_TIMEOUT = 5
+
+{% if OLD_BROKER_URL and rabbitmq_migration_bridge|default(False) %}
+CELERY_BROKER_READ_URL = BROKER_READ_URL = '{{ OLD_BROKER_URL }}'
+CELERY_BROKER_WRITE_URL = BROKER_WRITE_URL = '{{ BROKER_URL }}'
+{% else %}
+CELERY_BROKER_URL = BROKER_URL = '{{ BROKER_URL }}'
+{% endif %}
+CELERY_HEARTBEAT_THRESHOLDS = {
+{% for queue, threshold in CELERY_HEARTBEAT_THRESHOLDS.items() | sort %}
+    {{ queue | to_json }}: {% if threshold == None %}None{% else %}{{ threshold | to_json }}{% endif %},
+{% endfor %}
+}
+
+{% if 'CELERY_REMINDER_CASE_UPDATE_BULK_QUEUE' in localsettings and localsettings.CELERY_REMINDER_CASE_UPDATE_BULK_QUEUE %}
+CELERY_REMINDER_CASE_UPDATE_BULK_QUEUE = '{{ localsettings.CELERY_REMINDER_CASE_UPDATE_BULK_QUEUE }}'
+{% endif %}
+
+FORMPLAYER_URL = "/formplayer"
+
+{% if FORMPLAYER_INTERNAL_AUTH_KEY %}
+FORMPLAYER_INTERNAL_AUTH_KEY = "{{ FORMPLAYER_INTERNAL_AUTH_KEY }}"
+{% endif %}
+
+SOIL_BACKEND = "soil.CachedDownload"
+SOIL_DEFAULT_CACHE = "redis"
+
+REPORT_CACHE = 'redis'
+
+
+redis_cache = {
+    'BACKEND': 'django_redis.cache.RedisCache',
+{% set redis_url = 'redis://' ~ localsettings.REDIS_HOST ~ ':' ~ localsettings.REDIS_PORT %}
+{% if localsettings.get('REDIS_PASSWORD') %}
+{% set redis_url = 'redis://:' ~ localsettings.REDIS_PASSWORD ~ '@' ~ localsettings.REDIS_HOST ~ ':' ~ localsettings.REDIS_PORT %}
+{% endif %}
+{% if 'REDIS_DB' in localsettings %}
+    'LOCATION': '{{ redis_url }}/{{ localsettings.REDIS_DB }}',
+{% else %}
+    'LOCATION': '{{ redis_url }}',
+{% endif %}
+    'OPTIONS': {
+        'PARSER_CLASS': 'redis.connection.HiredisParser',
+        'REDIS_CLIENT_KWARGS': {
+            'health_check_interval': 15,
+        },
+{% if is_redis_cluster %}
+        'REDIS_CLIENT_CLASS': 'rediscluster.RedisCluster',
+        'CONNECTION_POOL_CLASS': 'rediscluster.connection.ClusterConnectionPool',
+        'CONNECTION_POOL_KWARGS': {
+            'skip_full_coverage_check': True
+        },
+{% endif %}
+    },
+}
+
+CACHES = {
+    'default': redis_cache,
+    'redis': redis_cache,
+}
+
+ELASTICSEARCH_HOSTS = [
+    {% for es_host in groups.es_coordinator|default(groups.elasticsearch) -%}
+        '{{ es_host }}',
+    {% endfor -%}
+]
+ELASTICSEARCH_PORT = {{ ELASTICSEARCH_PORT }}
+
+####### setting Elasticsearch major version #####
+{% if 'ELASTICSEARCH_MAJOR_VERSION' in localsettings %}
+ELASTICSEARCH_MAJOR_VERSION = {{ localsettings.ELASTICSEARCH_MAJOR_VERSION }}
+{% else %}
+ELASTICSEARCH_MAJOR_VERSION = 2
+{% endif %}
+
+ES_SETTINGS = {{ ES_SETTINGS }}
+
+SECRET_KEY = "{{ SECRET_KEY }}"
+
+PRIME_VIEWS_INTERVAL = 2
+
+####### PACT SPECIAL SETTINGS
+
+PACT_HP_GROUP_ID = "ee042f33c890421794f69ed81e030882"
+PACT_URL = 'http://localhost:8001/'
+PACT_CHWS = {
+    'ao970': 'chw',
+    'asc30': 'both',
+    'cs783': 'chw',
+    'gj093': 'chw',
+    'ma651': 'chw',
+    'ss192': 'chw',
+    'ss524': 'chw',
+    'jzb89': 'chw', #no profile
+    'ctsims': 'chw', #no profile
+    'rachel': 'both', #no profile
+
+
+    'clare': 'chw-inactive',
+
+    'isaac': 'chw-inactive',
+    'ink': 'chw-inactive',
+
+    'zmt0': 'chw-inactive',
+    'ral42': 'chw-inactive',
+    'ac381': 'chw-inactive',
+    'an907': 'chw-inactive',
+    'lm723': 'chw-inactive',
+    'lnb9': 'chw-inactive',
+    'nc903': 'chw-inactive',
+    'rsb25': 'chw-inactive',
+    'lmg68': 'chw-inactive',
+    'godfrey': 'chw-inactive',
+#    'ayesha': 'chw-inactive',
+}
+
+INTERNAL_DATA = {
+    "business_unit": ["Inc", "DSI", "DSA", "DMoz"],
+    "product": ["CommCare", "CommConnect", "CommTrack", "RapidSMS", "Custom"],
+    "services": ["Basic", "Plus", "Full", "Custom", "Active Data Management", "Daily Contract", "Call Center"],
+    "account_types": [	"Academic", "Alliance", "Competitor", "Funder", "Implementer - Local", "Implementer - Multinational",
+                          "Investor", "Networking", "Other", "Partner", "Pharmaceutical", "Reseller", "Technology"],
+    "initiatives": ["CORE Group POC", "DIV 1 POC", "DIV 2 POC", "Senegal POC", "Workshop", "Partner Program Sandbox"],
+    "contract_type": ["FFP", "T&M", "Cost Plus"],
+    "area": [
+        {
+            'name': 'Logistics',
+            'sub_areas': ['Commodity Tracking/Procurement', 'Human Resources']
+        },
+        {
+            'name': 'Financial Services for the Poor',
+            'sub_areas': ['Conditional Cash Transfer', 'Financial Services to the Poor', 'Mobile Banking']
+        },
+        {
+            'name': 'Water, Sanitation, & Hygiene',
+            'sub_areas': ['Water, Sanitation, & Hygiene']},
+        {
+            'name': 'Agriculture and Food Security',
+            'sub_areas': ['Agriculture', 'Food Security']},
+        {
+            'name': 'Economic Development',
+            'sub_areas': ['Rural Development', 'Urban Development', 'Safety & Security']
+        },
+        {
+            'name': 'Emergency Response',
+            'sub_areas': ['Emergency Response']
+        },
+        {
+            'name': 'Education and Training',
+            'sub_areas': ['Adult Training', 'Child Education', 'Early Childhood Development']
+        },
+        {
+            'name': 'Other',
+            'sub_areas': ['Environment', 'Orphans and Vulnerable Children', 'Telecommunications']
+        },
+        {
+            'name': "Gender Equality and Women's Empowerment",
+            'sub_areas': ['Gender Services', 'Sex Workers']
+        },
+        {
+            'name': 'Health',
+            'sub_areas': ['Cardiac Diseases', 'Care coordination', 'Cervical Cancer', 'Diagnostics', 'Diarrhea',
+                          'Family Planning', 'HIV/AIDS', 'Infectious Diseases', 'Informatics', 'Malaria',
+                          'Maternal, Newborn, & Child Health', 'Medication adherence', 'Mental Health',
+                          'Neglected Tropical Diseases', 'Non-Communicable Diseases', 'Nutrition', 'Other', 'Polio',
+                          'Primary Care', 'Respiratory Diseases', 'Surgery', 'Surveillance', 'Telemedicine',
+                          'Tuberculosis', 'Vaccinations']
+        },
+        {
+            'name': 'Governance and Accountability',
+            'sub_areas': ['Governence', 'Social Accountability']
+        }
+    ],
+    "country": ["Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua & Deps", "Argentina", "Armenia",
+                "Australia", "Austria", "Azerbaijan", "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus",
+                "Belgium", "Belize", "Benin", "Bhutan", "Bolivia", "Bosnia Herzegovina", "Botswana", "Brazil",
+                "Brunei", "Bulgaria", "Burkina", "Burundi", "Cambodia", "Cameroon", "Canada", "Cape Verde",
+                "Central African Rep", "Chad", "Chile", "China", "Colombia", "Comoros", "Congo",
+                "Congo {Democratic Rep}", "Costa Rica", "Croatia", "Cuba", "Cyprus", "Czech Republic", "Denmark",
+                "Djibouti", "Dominica", "Dominican Republic", "East Timor", "Ecuador", "Egypt", "El Salvador",
+                "Equatorial Guinea", "Eritrea", "Estonia", "Ethiopia", "Fiji", "Finland", "France", "Gabon", "Gambia",
+                "Georgia", "Germany", "Ghana", "Greece", "Grenada", "Guatemala", "Guinea", "Guinea-Bissau", "Guyana",
+                "Haiti", "Honduras", "Hungary", "Iceland", "India", "Indonesia", "Iran", "Iraq", "Ireland {Republic}",
+                "Israel", "Italy", "Ivory Coast", "Jamaica", "Japan", "Jordan", "Kazakhstan", "Kenya", "Kiribati",
+                "Korea North", "Korea South", "Kosovo", "Kuwait", "Kyrgyzstan", "Laos", "Latvia", "Lebanon", "Lesotho",
+                "Liberia", "Libya", "Liechtenstein", "Lithuania", "Luxembourg", "Macedonia", "Madagascar", "Malawi",
+                "Malaysia", "Maldives", "Mali", "Malta", "Marshall Islands", "Mauritania", "Mauritius", "Mexico",
+                "Micronesia", "Moldova", "Monaco", "Mongolia", "Montenegro", "Morocco", "Mozambique", "Myanmar, {Burma}",
+                "Namibia", "Nauru", "Nepal", "Netherlands", "New Zealand", "Nicaragua", "Niger", "Nigeria", "Norway",
+                "Oman", "Pakistan", "Palau", "Panama", "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Poland",
+                "Portugal", "Qatar", "Romania", "Russian Federation", "Rwanda", "St Kitts & Nevis", "St Lucia",
+                "Saint Vincent & the Grenadines", "Samoa", "San Marino", "Sao Tome & Principe", "Saudi Arabia",
+                "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore", "Slovakia", "Slovenia",
+                "Solomon Islands", "Somalia", "South Africa", "South Sudan", "Spain", "Sri Lanka", "Sudan", "Suriname",
+                "Swaziland", "Sweden", "Switzerland", "Syria", "Taiwan", "Tajikistan", "Tanzania", "Thailand", "Togo",
+                "Tonga", "Trinidad & Tobago", "Tunisia", "Turkey", "Turkmenistan", "Tuvalu", "Uganda", "Ukraine",
+                "United Arab Emirates", "United Kingdom", "United States", "Uruguay", "Uzbekistan", "Vanuatu",
+                "Vatican City", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"]
+}
+
+COUCH_STALE_QUERY = 'update_after'
+
+CCHQ_API_THROTTLE_REQUESTS = 25
+CCHQ_API_THROTTLE_TIMEFRAME = 15
+
+{% if 'ALLOW_PHONE_AS_DEFAULT_TWO_FACTOR_DEVICE' in localsettings %}
+ALLOW_PHONE_AS_DEFAULT_TWO_FACTOR_DEVICE = {{ localsettings.ALLOW_PHONE_AS_DEFAULT_TWO_FACTOR_DEVICE }}
+{% endif %}
+
+RATE_LIMIT_SUBMISSIONS = {{ localsettings.RATE_LIMIT_SUBMISSIONS | default(False) }}
+
+DATA_UPLOAD_MAX_NUMBER_FILES = {{ localsettings.DATA_UPLOAD_MAX_NUMBER_FILES | default('None') }}
+
+{% if 'SAVED_EXPORT_ACCESS_CUTOFF' in localsettings %}
+SAVED_EXPORT_ACCESS_CUTOFF = {{ localsettings.SAVED_EXPORT_ACCESS_CUTOFF }}
+{% endif %}
+
+{% if 'STALE_EXPORT_THRESHOLD' in localsettings %}
+STALE_EXPORT_THRESHOLD = {{ localsettings.STALE_EXPORT_THRESHOLD }}
+{% endif %}
+
+{% if 'REQUIRE_TWO_FACTOR_FOR_SUPERUSERS' in localsettings %}
+REQUIRE_TWO_FACTOR_FOR_SUPERUSERS = {{ localsettings.REQUIRE_TWO_FACTOR_FOR_SUPERUSERS }}
+{% endif %}
+
+
+{% if MAPS_LAYERS %}
+MAPS_LAYERS = json.loads('{{ MAPS_LAYERS|to_json }}')
+{% endif %}
+
+{% if 'PILLOWTOP_MACHINE_ID' in localsettings and localsettings.PILLOWTOP_MACHINE_ID %}
+PILLOWTOP_MACHINE_ID = '{{ localsettings.PILLOWTOP_MACHINE_ID }}'
+{% endif %}
+
+ACTIVE_PILLOW_NAMES = [
+{% for pillow_name in app_processes_config.pillows.values() | map("dict2items") | flatten | map(attribute="key") | unique | sort %}
+    "{{ pillow_name }}",
+{% endfor %}
+]
+
+{% if SIMPLE_API_KEYS %}
+SIMPLE_API_KEYS = {{ SIMPLE_API_KEYS|to_json }}
+{% endif %}
+
+{% if groups.kafka %}
+KAFKA_BROKERS = [
+    {%- for host in groups.kafka -%}
+    '{{ host }}:9092',
+    {%- endfor -%}
+]
+{% endif %}
+
+INVOICE_TERMS = "Net 30"
+
+{% if BOOKKEEPER_CONTACT_EMAILS %}
+BOOKKEEPER_CONTACT_EMAILS = {{ BOOKKEEPER_CONTACT_EMAILS|to_json }}
+{% endif %}
+
+{% if localsettings.get('INVOICE_STARTING_NUMBER') %}
+INVOICE_STARTING_NUMBER = {{ localsettings.INVOICE_STARTING_NUMBER }}
+{% endif %}
+
+{% if localsettings.get('INVOICE_PREFIX') %}
+INVOICE_PREFIX = '{{ localsettings.INVOICE_PREFIX }}'
+{% endif %}
+
+{% if localsettings.get('INVOICE_FROM_ADDRESS') %}
+INVOICE_FROM_ADDRESS = {{ localsettings.INVOICE_FROM_ADDRESS|to_json }}
+{% endif %}
+
+{% if localsettings.get('BANK_ADDRESS') %}
+BANK_ADDRESS = {{ localsettings.BANK_ADDRESS|to_json }}
+{% endif %}
+
+{% if localsettings.get('BANK_NAME') %}
+BANK_NAME = '{{ localsettings.BANK_NAME }}'
+{% endif %}
+
+{% if BANK_ACCOUNT_NUMBER %}
+BANK_ACCOUNT_NUMBER = '{{ BANK_ACCOUNT_NUMBER }}'
+{% endif %}
+
+{% if localsettings.get('BANK_SWIFT_CODE') %}
+BANK_SWIFT_CODE = '{{ localsettings.BANK_SWIFT_CODE }}'
+{% endif %}
+
+{% if OPEN_EXCHANGE_RATES_API_ID %}
+OPEN_EXCHANGE_RATES_API_ID = '{{ OPEN_EXCHANGE_RATES_API_ID }}'
+{% endif %}
+
+{% if STRIPE_PRIVATE_KEY %}
+STRIPE_PRIVATE_KEY = '{{ STRIPE_PRIVATE_KEY }}'
+{% endif %}
+
+{% if STRIPE_PUBLIC_KEY %}
+STRIPE_PUBLIC_KEY = '{{ STRIPE_PUBLIC_KEY }}'
+{% endif %}
+
+COMPRESS_OFFLINE = True
+
+{% if localsettings.get('ES_QUERY_CHUNKSIZE') %}
+ES_QUERY_CHUNKSIZE = '{{ localsettings.ES_QUERY_CHUNKSIZE }}'
+{% endif %}
+
+{% if localsettings.get('SMS_PREFIXES_BY_COUNTRY') %}
+SMS_PREFIXES_BY_COUNTRY = '{{ localsettings.SMS_PREFIXES_BY_COUNTRY }}'
+{% endif %}
+
+{% if localsettings.get('INACTIVITY_TIMEOUT') %}
+INACTIVITY_TIMEOUT = {{ localsettings.INACTIVITY_TIMEOUT }}
+{% endif %}
+
+# Set to something like "192.168.1.5:8000" (with your IP address).
+# See corehq/apps/builds/README.md for more information.
+BASE_ADDRESS = '{{ SITE_HOST }}'
+
+{% if localsettings.get('J2ME_ADDRESS') %}
+J2ME_ADDRESS = '{{ localsettings.J2ME_ADDRESS }}'
+{% endif %}
+
+EMAIL_USE_TLS = {{ localsettings.EMAIL_USE_TLS }}
+
+BANK_ROUTING_NUMBER_ACH = '{{ BANK_ROUTING_NUMBER_ACH }}'
+BANK_ROUTING_NUMBER_WIRE = '{{ BANK_ROUTING_NUMBER_WIRE }}'
+
+ENABLE_PRELOGIN_SITE = {{ localsettings.get('ENABLE_PRELOGIN_SITE', True) }}
+
+{% if localsettings.get('ADD_CAPTCHA_FIELD_TO_FORMS') %}
+ADD_CAPTCHA_FIELD_TO_FORMS = True
+{% endif %}
+
+{% if RECAPTCHA_PUBLIC_KEY %}
+RECAPTCHA_PUBLIC_KEY = {{ RECAPTCHA_PUBLIC_KEY }}
+{% endif %}
+
+{% if RECAPTCHA_PRIVATE_KEY %}
+RECAPTCHA_PRIVATE_KEY = {{ RECAPTCHA_PRIVATE_KEY }}
+{% endif %}
+
+{% if localsettings.get('DISABLE_AUTOCOMPLETE_ON_SENSITIVE_FORMS') %}
+DISABLE_AUTOCOMPLETE_ON_SENSITIVE_FORMS = True
+{% endif %}
+
+{% if localsettings.get('CUSTOM_PASSWORD_STRENGTH_MESSAGE') %}
+CUSTOM_PASSWORD_STRENGTH_MESSAGE = '{{ localsettings.get('CUSTOM_PASSWORD_STRENGTH_MESSAGE') }}'
+{% endif %}
+
+{% if HQ_PRIVATE_KEY %}
+HQ_PRIVATE_KEY = \
+{{ HQ_PRIVATE_KEY }}
+{% endif %}
+
+{% set metrics_providers = [] %}
+{% if DATADOG_ENABLED|default(false) %}
+{% set metrics_providers = metrics_providers + ['corehq.util.metrics.datadog.DatadogMetrics'] %}
+DATADOG_API_KEY = '{{ DATADOG_API_KEY }}'
+DATADOG_APP_KEY = '{{ DATADOG_APP_KEY }}'
+{% endif %}
+
+{% if prometheus_monitoring_enabled|default(false) %}
+{% set metrics_providers = metrics_providers + ['corehq.util.metrics.prometheus.PrometheusMetrics'] %}
+{% endif %}
+
+METRICS_PROVIDERS = {{ metrics_providers | to_json }}
+
+{% if localsettings.get('WS4REDIS_CONNECTION_HOST') %}
+WS4REDIS_CONNECTION = {
+    'host': '{{ localsettings.WS4REDIS_CONNECTION_HOST }}'
+}
+{% endif %}
+
+{% if prometheus_celery_pushgateway is defined %}
+PROMETHEUS_PUSHGATEWAY_HOST = os.environ.get('PROMETHEUS_PUSHGATEWAY_HOST', None)
+{% endif %}
+
+{% if TWO_FACTOR_GATEWAY_ENABLED %}
+TWO_FACTOR_SMS_GATEWAY = 'corehq.apps.hqwebapp.two_factor_gateways.Gateway'
+TWO_FACTOR_CALL_GATEWAY = 'corehq.apps.hqwebapp.two_factor_gateways.Gateway'
+{% endif %}
+
+{% if 'ENFORCE_TWO_FACTOR_FOR_SUPERUSERS' in localsettings %}
+ENFORCE_TWO_FACTOR_FOR_SUPERUSERS = {{ localsettings.ENFORCE_TWO_FACTOR_FOR_SUPERUSERS }}
+{% endif %}
+
+{% if 'ENFORCE_SSO_LOGIN' in localsettings %}
+ENFORCE_SSO_LOGIN = {{ localsettings.ENFORCE_SSO_LOGIN }}
+{% endif %}
+
+{% if localsettings.get('CUSTOM_LANDING_TEMPLATE') and localsettings.CUSTOM_LANDING_TEMPLATE is not mapping %}
+CUSTOM_LANDING_TEMPLATE = '{{ localsettings.CUSTOM_LANDING_TEMPLATE }}'
+{% elif localsettings.get('CUSTOM_LANDING_TEMPLATE') %}
+CUSTOM_LANDING_TEMPLATE = {
+{% for hostname, template in localsettings.CUSTOM_LANDING_TEMPLATE.items() %}
+    '{{ hostname }}': '{{ template }}',
+{% endfor %}
+}
+{% endif %}
+
+{% if localsettings.get('ENTERPRISE_MODE') %}
+ENTERPRISE_MODE = {{ localsettings.ENTERPRISE_MODE }}
+{% endif %}
+
+{% if localsettings.get('RESTRICT_DOMAIN_CREATION') %}
+RESTRICT_DOMAIN_CREATION = {{ localsettings.RESTRICT_DOMAIN_CREATION }}
+{% endif %}
+
+{% if localsettings.get('TABLEAU_URL_ROOT') %}
+TABLEAU_URL_ROOT = '{{ localsettings.TABLEAU_URL_ROOT }}'
+{% endif %}
+
+{% if localsettings.get('COMMCARE_HQ_NAME') and localsettings.COMMCARE_HQ_NAME is not mapping %}
+COMMCARE_HQ_NAME = '{{ localsettings.COMMCARE_HQ_NAME }}'
+{% elif localsettings.get('COMMCARE_HQ_NAME') %}
+COMMCARE_HQ_NAME = {
+{% for hostname, commcare_hq_name in localsettings.COMMCARE_HQ_NAME.items() %}
+    '{{ hostname }}': '{{ commcare_hq_name }}',
+{% endfor %}
+}
+{% endif %}
+
+{% if localsettings.get('COMMCARE_NAME') and localsettings.COMMCARE_NAME is not mapping %}
+COMMCARE_NAME = '{{ localsettings.COMMCARE_NAME }}'
+{% elif localsettings.get('COMMCARE_NAME') %}
+COMMCARE_NAME = {
+{% for hostname, commcare_name in localsettings.COMMCARE_NAME.items() %}
+    '{{ hostname }}': '{{ commcare_name }}',
+{% endfor %}
+}
+{% endif %}
+
+{#-- Sentry --#}
+{% if SENTRY_DSN %}
+SENTRY_DSN = '{{ SENTRY_DSN }}'
+{% endif %}
+
+{% if SENTRY_API_KEY %}
+SENTRY_API_KEY = '{{ SENTRY_API_KEY }}'
+{% endif %}
+
+{% if 'SENTRY_ORGANIZATION_SLUG' in localsettings %}
+SENTRY_ORGANIZATION_SLUG = '{{ localsettings.SENTRY_ORGANIZATION_SLUG }}'
+{% endif %}
+
+{% if 'SENTRY_PROJECT_SLUG' in localsettings %}
+SENTRY_PROJECT_SLUG = '{{ localsettings.SENTRY_PROJECT_SLUG }}'
+{% endif %}
+
+{% if 'SENTRY_REPOSITORY' in localsettings %}
+SENTRY_REPOSITORY = '{{ localsettings.SENTRY_REPOSITORY }}'
+{% endif %}
+{# -- #}
+
+{# -- Sentry Deprecated -- #}
+{% if SENTRY_PUBLIC_KEY %}
+SENTRY_PUBLIC_KEY = '{{ SENTRY_PUBLIC_KEY }}'
+SENTRY_PRIVATE_KEY = '{{ SENTRY_PRIVATE_KEY }}'
+SENTRY_PROJECT_ID = '{{ SENTRY_PROJECT_ID }}'
+{% endif %}
+
+{% if SENTRY_QUERY_URL %}
+SENTRY_QUERY_URL = '{{ SENTRY_QUERY_URL }}'
+{% endif %}
+{# -- #}
+
+{% if GREENHOUSE_API_KEY %}
+GREENHOUSE_API_KEY = '{{ GREENHOUSE_API_KEY }}'
+{% endif %}
+
+LOCAL_LOGGING_CONFIG = json.loads('{{ localsettings.get('LOCAL_LOGGING_CONFIG', {})|to_json }}')
+LOCAL_MIDDLEWARE = {{ localsettings.get('LOCAL_MIDDLEWARE', [])|to_json }}
+
+{# security.W004, W006, W007: Strict-Transport-Security, X-Content-Type-Options, and X-XSS-Protection handled in nginx (see .../roles/nginx/vars/cchq_ssl.yml) #}
+{# security.W008: the ALB and nginx already redirect HTTP to HTTPS so safe to silence this warning #}
+GLOBAL_SILENCED_SYSTEM_CHECKS = ['security.W004', 'security.W006', 'security.W007', 'security.W008']
+SILENCED_SYSTEM_CHECKS = GLOBAL_SILENCED_SYSTEM_CHECKS + {{ localsettings.get('SILENCED_SYSTEM_CHECKS', [])|to_json }}
+
+BYPASS_SESSIONS_FOR_MOBILE = {{localsettings.get('BYPASS_SESSIONS_FOR_MOBILE', False)}}
+
+
+{% if localsettings.get('SUMOLOGIC_URL') %}
+SUMOLOGIC_URL = '{{ localsettings.SUMOLOGIC_URL }}'
+{% endif %}
+
+{% if localsettings.get('DAYS_TO_KEEP_DEVICE_LOGS') %}
+DAYS_TO_KEEP_DEVICE_LOGS = {{ localsettings.DAYS_TO_KEEP_DEVICE_LOGS }}
+{% endif %}
+
+{% if localsettings.get('ASYNC_INDICATORS_TO_QUEUE') %}
+ASYNC_INDICATORS_TO_QUEUE = {{ localsettings.ASYNC_INDICATORS_TO_QUEUE }}
+{% endif %}
+
+{% if localsettings.get('ASYNC_INDICATOR_QUEUE_CRONTAB') %}
+ASYNC_INDICATOR_QUEUE_CRONTAB = crontab(**{{ localsettings.get('ASYNC_INDICATOR_QUEUE_CRONTAB') }})
+{% endif %}
+
+{% if localsettings.get('ASYNC_INDICATOR_QUEUE_TIMES') %}
+ASYNC_INDICATOR_QUEUE_TIMES = {{ localsettings.get('ASYNC_INDICATOR_QUEUE_TIMES') }}
+{% endif %}
+
+{% if 'MAX_RULE_UPDATES_IN_ONE_RUN' in localsettings %}
+MAX_RULE_UPDATES_IN_ONE_RUN = {{ localsettings.MAX_RULE_UPDATES_IN_ONE_RUN }}
+{% endif %}
+
+{% if localsettings.get('REPEATERS_WHITELIST') is not none %}
+REPEATERS_WHITELIST = {{ localsettings.REPEATERS_WHITELIST }}
+{% endif %}
+
+{% if localsettings.get('ENABLE_NEW_TRIAL_EXPERIENCE') %}
+ENABLE_NEW_TRIAL_EXPERIENCE = True
+{% endif %}
+
+{% if localsettings.AUDIT_MODEL_SAVE is defined %}
+AUDIT_MODEL_SAVE= [
+  {% for model in localsettings.get("AUDIT_MODEL_SAVE") -%}
+  '{{ model }}',
+  {% endfor -%}
+]
+{% endif %}
+
+{% if localsettings.AUDIT_MODULES is defined %}
+AUDIT_MODULES= [
+  {% for module in localsettings.get("AUDIT_MODULES") -%}
+  '{{ module }}',
+  {% endfor -%}
+]
+{% endif %}
+
+{% if localsettings.AUDIT_VIEWS is defined %}
+AUDIT_VIEWS= [
+  {% for view in localsettings.get("AUDIT_VIEWS") -%}
+  '{{ view }}',
+  {% endfor -%}
+]
+{% endif %}
+
+{% if localsettings.AUDIT_ALL_VIEWS is defined %}
+AUDIT_ALL_VIEWS = {{ localsettings.AUDIT_ALL_VIEWS }}
+{% endif %}
+
+{% if localsettings.AUDIT_TRACE_ID_HEADER is defined %}
+AUDIT_TRACE_ID_HEADER = '{{ localsettings.AUDIT_TRACE_ID_HEADER }}'
+{% endif %}
+
+{% if localsettings.get('STATIC_TOGGLE_STATES') is not none %}
+STATIC_TOGGLE_STATES = {{ localsettings.STATIC_TOGGLE_STATES }}
+{% endif %}
+
+
+SERVER_EMAIL = '{{ server_email }}'
+DEFAULT_FROM_EMAIL = '{{ default_from_email }}'
+RETURN_PATH_EMAIL = '{{ return_path_email }}'
+SUPPORT_EMAIL = '{{ support_email }}'
+PROBONO_SUPPORT_EMAIL = '{{ probono_support_email }}'
+ACCOUNTS_EMAIL = '{{ accounts_email }}'
+DATA_EMAIL = '{{ data_email }}'
+SUBSCRIPTION_CHANGE_EMAIL = '{{ subscription_change_email }}'
+INTERNAL_SUBSCRIPTION_CHANGE_EMAIL = '{{ internal_subscription_change_email }}'
+BILLING_EMAIL = '{{ billing_email }}'
+INVOICING_CONTACT_EMAIL = '{{ invoicing_contact_email }}'
+GROWTH_EMAIL = '{{ growth_email }}'
+SAAS_OPS_EMAIL = '{{ saas_ops_email }}'
+SAAS_REPORTING_EMAIL = '{{ saas_reporting_email }}'
+MASTER_LIST_EMAIL = '{{ master_list_email }}'
+SALES_EMAIL = '{{ sales_email }}'
+PRIVACY_EMAIL = '{{ privacy_email }}'
+EULA_CHANGE_EMAIL = '{{ eula_change_email }}'
+CONTACT_EMAIL = '{{ contact_email }}'
+FEEDBACK_EMAIL = '{{ feedback_email }}'
+SOFT_ASSERT_EMAIL = '{{ soft_assert_email }}'
+DAILY_DEPLOY_EMAIL = '{{ daily_deploy_email }}'
+{% if TRANSIFEX_API_TOKEN %}
+TRANSIFEX_DETAILS = {
+    'organization': 'dimagi',
+    'project': {
+        'icds-cas': ['test-project-211', 'icds-cas-aww', 'icds-cas-ls', 'icds-cas-it', 'icds-cas-miscellaneous',
+                     'rtl-test-project'],
+    },
+    'teams': {
+        'icds-cas': {
+            'en': 'https://www.transifex.com/dimagi/teams/86537/',
+            'ori': 'https://www.transifex.com/dimagi/teams/86537/or/'
+        }
+    },
+    'token': '{{ TRANSIFEX_API_TOKEN }}'
+}
+{% endif %}
+
+{% if localsettings.KAFKA_API_VERSION is defined or kafka_version is defined %}
+KAFKA_API_VERSION = tuple({{ localsettings.KAFKA_API_VERSION|default(kafka_version.split('.')|map('int')|list) }})
+{% endif %}
+
+{% if localsettings.ICDS_USE_CITUS is defined %}
+ICDS_USE_CITUS = {{ localsettings.ICDS_USE_CITUS }}
+{% endif %}
+
+{% if localsettings.STATIC_DATA_SOURCE_PROVIDERS is defined %}
+STATIC_DATA_SOURCE_PROVIDERS = [
+{% for provider in localsettings.STATIC_DATA_SOURCE_PROVIDERS %}
+    '{{ provider }}',
+{% endfor %}
+]
+{% endif %}
+
+{% if localsettings.ES_SEARCH_TIMEOUT is defined %}
+ES_SEARCH_TIMEOUT = {{ localsettings.ES_SEARCH_TIMEOUT }}
+{% endif %}
+
+{% if localsettings.ES_XFORM_INDEX_NAME is defined %}
+ES_XFORM_INDEX_NAME = '{{ localsettings.ES_XFORM_INDEX_NAME }}'
+{% endif %}
+
+{% if localsettings.ES_CASE_SEARCH_INDEX_NAME is defined %}
+ES_CASE_SEARCH_INDEX_NAME = '{{ localsettings.ES_CASE_SEARCH_INDEX_NAME }}'
+{% endif %}
+
+{# Elasticsearch Multiplexer Settings, would be used while reindexing #}
+{% if localsettings.ES_APPS_INDEX_MULTIPLEXED is defined %}
+ES_APPS_INDEX_MULTIPLEXED = {{ localsettings.ES_APPS_INDEX_MULTIPLEXED }}
+{% endif %}
+{% if localsettings.ES_APPS_INDEX_SWAPPED is defined %}
+ES_APPS_INDEX_SWAPPED = {{ localsettings.ES_APPS_INDEX_SWAPPED }}
+{% endif %}
+
+{% if localsettings.ES_CASE_SEARCH_INDEX_MULTIPLEXED is defined %}
+ES_CASE_SEARCH_INDEX_MULTIPLEXED = {{ localsettings.ES_CASE_SEARCH_INDEX_MULTIPLEXED }}
+{% endif %}
+{% if localsettings.ES_CASE_SEARCH_INDEX_SWAPPED is defined %}
+ES_CASE_SEARCH_INDEX_SWAPPED = {{ localsettings.ES_CASE_SEARCH_INDEX_SWAPPED }}
+{% endif %}
+
+
+{% if localsettings.ES_CASES_INDEX_MULTIPLEXED is defined %}
+ES_CASES_INDEX_MULTIPLEXED = {{ localsettings.ES_CASES_INDEX_MULTIPLEXED }}
+{% endif %}
+{% if localsettings.ES_CASES_INDEX_SWAPPED is defined %}
+ES_CASES_INDEX_SWAPPED = {{ localsettings.ES_CASES_INDEX_SWAPPED }}
+{% endif %}
+
+
+{% if localsettings.ES_DOMAINS_INDEX_MULTIPLEXED is defined %}
+ES_DOMAINS_INDEX_MULTIPLEXED = {{ localsettings.ES_DOMAINS_INDEX_MULTIPLEXED }}
+{% endif %}
+{% if localsettings.ES_DOMAINS_INDEX_SWAPPED is defined %}
+ES_DOMAINS_INDEX_SWAPPED = {{ localsettings.ES_DOMAINS_INDEX_SWAPPED }}
+{% endif %}
+
+{% if localsettings.ES_FORMS_INDEX_MULTIPLEXED is defined %}
+ES_FORMS_INDEX_MULTIPLEXED = {{ localsettings.ES_FORMS_INDEX_MULTIPLEXED }}
+{% endif %}
+{% if localsettings.ES_FORMS_INDEX_SWAPPED is defined %}
+ES_FORMS_INDEX_SWAPPED = {{ localsettings.ES_FORMS_INDEX_SWAPPED }}
+{% endif %}
+
+{% if localsettings.ES_GROUPS_INDEX_MULTIPLEXED is defined %}
+ES_GROUPS_INDEX_MULTIPLEXED = {{ localsettings.ES_GROUPS_INDEX_MULTIPLEXED }}
+{% endif %}
+{% if localsettings.ES_GROUPS_INDEX_SWAPPED is defined %}
+ES_GROUPS_INDEX_SWAPPED = {{ localsettings.ES_GROUPS_INDEX_SWAPPED }}
+{% endif %}
+
+{% if localsettings.ES_SMS_INDEX_MULTIPLEXED is defined %}
+ES_SMS_INDEX_MULTIPLEXED = {{ localsettings.ES_SMS_INDEX_MULTIPLEXED }}
+{% endif %}
+{% if localsettings.ES_SMS_INDEX_SWAPPED is defined %}
+ES_SMS_INDEX_SWAPPED = {{ localsettings.ES_SMS_INDEX_SWAPPED }}
+{% endif %}
+
+{% if localsettings.ES_USERS_INDEX_MULTIPLEXED is defined %}
+ES_USERS_INDEX_MULTIPLEXED = {{ localsettings.ES_USERS_INDEX_MULTIPLEXED }}
+{% endif %}
+{% if localsettings.ES_USERS_INDEX_SWAPPED is defined %}
+ES_USERS_INDEX_SWAPPED = {{ localsettings.ES_USERS_INDEX_SWAPPED }}
+{% endif %}
+
+{% if localsettings.USE_KAFKA_SHORTEST_BACKLOG_PARTITIONER is defined %}
+USE_KAFKA_SHORTEST_BACKLOG_PARTITIONER = {{ localsettings.USE_KAFKA_SHORTEST_BACKLOG_PARTITIONER }}
+{% endif %}
+
+{% if localsettings.MESSAGING_RULE_CASE_CHUNK_SIZE is defined %}
+MESSAGING_RULE_CASE_CHUNK_SIZE = {{ localsettings.MESSAGING_RULE_CASE_CHUNK_SIZE }}
+{% endif %}
+
+{% if localsettings.ASYNC_INDICATOR_CHUNK_SIZE is defined %}
+ASYNC_INDICATOR_CHUNK_SIZE = {{ localsettings.ASYNC_INDICATOR_CHUNK_SIZE }}
+{% endif %}
+
+{% if localsettings.AVAILABLE_CUSTOM_SCHEDULING_CONTENT is defined %}
+LOCAL_AVAILABLE_CUSTOM_SCHEDULING_CONTENT = json.loads('{{ localsettings.AVAILABLE_CUSTOM_SCHEDULING_CONTENT|to_json }}')
+{% endif %}
+
+{% if localsettings.AVAILABLE_CUSTOM_REMINDER_RECIPIENTS is defined %}
+LOCAL_AVAILABLE_CUSTOM_REMINDER_RECIPIENTS = json.loads('{{ localsettings.AVAILABLE_CUSTOM_REMINDER_RECIPIENTS|to_json }}')
+{% endif %}
+
+{% if localsettings.AVAILABLE_CUSTOM_SCHEDULING_RECIPIENTS is defined %}
+LOCAL_AVAILABLE_CUSTOM_SCHEDULING_RECIPIENTS = json.loads('{{ localsettings.AVAILABLE_CUSTOM_SCHEDULING_RECIPIENTS|to_json }}')
+{% endif %}
+
+{% if localsettings.AVAILABLE_CUSTOM_RULE_CRITERIA is defined %}
+LOCAL_AVAILABLE_CUSTOM_RULE_CRITERIA = json.loads('{{ localsettings.AVAILABLE_CUSTOM_RULE_CRITERIA|to_json }}')
+{% endif %}
+
+{% if localsettings.AVAILABLE_CUSTOM_RULE_ACTIONS is defined %}
+LOCAL_AVAILABLE_CUSTOM_RULE_ACTIONS = json.loads('{{ localsettings.AVAILABLE_CUSTOM_RULE_ACTIONS|to_json }}')
+{% endif %}
+
+{% if localsettings.LOCAL_STATIC_DATA_SOURCES is defined %}
+LOCAL_STATIC_DATA_SOURCES = json.loads('{{ localsettings.LOCAL_STATIC_DATA_SOURCES|to_json }}')
+{% endif %}
+
+{% if localsettings.LOCAL_STATIC_UCR_REPORTS is defined %}
+LOCAL_STATIC_UCR_REPORTS = json.loads('{{ localsettings.LOCAL_STATIC_UCR_REPORTS|to_json }}')
+{% endif %}
+
+{% if localsettings.LOCAL_CUSTOM_UCR_EXPRESSION_LISTS is defined %}
+LOCAL_CUSTOM_UCR_EXPRESSION_LISTS = json.loads('{{ localsettings.LOCAL_CUSTOM_UCR_EXPRESSION_LISTS|to_json }}')
+{% endif %}
+
+{% if localsettings.LOCAL_CUSTOM_UCR_REPORT_FILTERS is defined %}
+LOCAL_CUSTOM_UCR_REPORT_FILTERS = json.loads('{{ localsettings.LOCAL_CUSTOM_UCR_REPORT_FILTERS|to_json }}')
+{% endif %}
+
+{% if localsettings.LOCAL_CUSTOM_UCR_REPORT_FILTER_VALUES is defined %}
+LOCAL_CUSTOM_UCR_REPORT_FILTER_VALUES = json.loads('{{ localsettings.LOCAL_CUSTOM_UCR_REPORT_FILTER_VALUES|to_json }}')
+{% endif %}
+
+{% if localsettings.LOCAL_DOMAIN_MODULE_MAP is defined %}
+LOCAL_DOMAIN_MODULE_MAP = json.loads('{{ localsettings.LOCAL_DOMAIN_MODULE_MAP|to_json }}')
+{% endif %}
+
+{% if localsettings.LOCAL_CUSTOM_DB_ROUTING is defined %}
+LOCAL_CUSTOM_DB_ROUTING = json.loads('{{ localsettings.LOCAL_CUSTOM_DB_ROUTING|to_json }}')
+{% endif %}
+
+{% if localsettings.LOCAL_REPEATER_CLASSES is defined %}
+LOCAL_REPEATER_CLASSES = json.loads('{{ localsettings.LOCAL_REPEATER_CLASSES|to_json }}')
+{% endif %}
+
+{% if localsettings.COMMCARE_EXTENSIONS is defined %}
+COMMCARE_EXTENSIONS = json.loads('{{ localsettings.COMMCARE_EXTENSIONS|to_json }}')
+{% endif %}
+
+{% if localsettings.DEVICE_LOGS_ENABLED|default(True) %}
+NO_DEVICE_LOG_ENVS = []
+{% else %}
+NO_DEVICE_LOG_ENVS = [{{ env_monitoring_id|to_json }}]
+{% endif %}
+
+{% if localsettings.IGNORE_ALL_DEMO_USER_SUBMISSIONS is defined %}
+IGNORE_ALL_DEMO_USER_SUBMISSIONS = {{ localsettings.IGNORE_ALL_DEMO_USER_SUBMISSIONS }}
+{% endif %}
+
+{% if localsettings.USE_PHONE_ENTRIES is defined %}
+USE_PHONE_ENTRIES = {{ localsettings.USE_PHONE_ENTRIES }}
+{% endif %}
+
+{% if localsettings.CHECK_REPEATERS_PARTITION_COUNT is defined %}
+CHECK_REPEATERS_PARTITION_COUNT = {{ localsettings.CHECK_REPEATERS_PARTITION_COUNT }}
+{% endif %}
+
+{% if localsettings.ABDM_ABHA_URL is defined %}
+ABDM_ABHA_URL = {{ localsettings.ABDM_ABHA_URL }}
+{% endif %}
+
+{% if localsettings.ABDM_GATEWAY_URL is defined %}
+ABDM_GATEWAY_URL = {{ localsettings.ABDM_GATEWAY_URL }}
+{% endif %}
+
+{% if localsettings.ABDM_X_CM_ID is defined %}
+ABDM_X_CM_ID = {{ localsettings.ABDM_X_CM_ID }}
+{% endif %}
+
+{% if ABDM_CLIENT_ID %}
+ABDM_CLIENT_ID = {{ ABDM_CLIENT_ID }}
+{% endif %}
+
+{% if ABDM_CLIENT_SECRET %}
+ABDM_CLIENT_SECRET = {{ ABDM_CLIENT_SECRET }}
+{% endif %}
+
+{% if FCM_CREDS %}
+FCM_CREDS = json.loads({{ FCM_CREDS }})
+{% endif %}
+
+{% if localsettings.CONNECTID_URL is defined %}
+CONNECTID_USERINFO_URL = "{{ localsettings.CONNECTID_URL }}"
+{% endif %}
+
+{% if localsettings.MAX_MOBILE_UCR_LIMIT is defined %}
+MAX_MOBILE_UCR_LIMIT = {{ localsettings.MAX_MOBILE_UCR_LIMIT }}
+{% endif %}

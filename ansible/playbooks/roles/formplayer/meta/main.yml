@@ -1,0 +1,7 @@
+---
+dependencies:
+  - role: java
+  - {role: supervisor, tags: supervisor}
+
+collections:
+  - community.general.monit

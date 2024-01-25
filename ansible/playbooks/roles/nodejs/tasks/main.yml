@@ -1,0 +1,45 @@
+- name: Add nodejs apt key
+  apt_key:
+    url: https://deb.nodesource.com/gpgkey/nodesource.gpg.key
+  become: yes
+
+- name: Add nodejs repo
+  apt_repository:
+    repo: 'deb http://deb.nodesource.com/node_16.x {{ ansible_distribution_release }} main'
+    state: present
+  become: yes
+
+- name: Install nodejs packages
+  apt: name="nodejs" state=present
+  become: yes
+
+- name: Set NPM registry
+  command: 'npm config set registry http://registry.npmjs.org/'
+  become: yes
+
+- name: Install npm items
+  npm: name="{{ item.name }}" version="{{ item.version }}" state=present global=yes
+  become: yes
+  with_items:
+    - {name: 'n', version: '2.1.12'}
+    - {name: 'less', version: '3.10.3'}
+    - {name: 'yarn', version: '1.22.4'}
+    - {name: 'bower', version: '1.8.4'}
+    - {name: 'uglify-js', version: '2.6.1'}
+    - {name: 'sass', version: '1.57.1'}
+  tags:
+    - npm
+
+- name: Update Node
+  command: 'n 16.19.1'
+  become: yes
+  tags:
+    - npm
+
+- name: Install correct npm version
+  npm: name="{{ item.name }}" version="{{ item.version }}" state=present global=yes
+  become: yes
+  with_items:
+    - {name: 'npm', version: '8.19.3'}
+  tags:
+    - npm

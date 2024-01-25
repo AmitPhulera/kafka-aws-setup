@@ -1,0 +1,143 @@
+---
+
+- name: Add PostgreSQL apt key
+  apt_key: url=https://www.postgresql.org/media/keys/ACCC4CF8.asc state=present
+
+- name: Add PostgreSQL apt repository
+  apt_repository: repo='deb http://apt.postgresql.org/pub/repos/apt/ {{ ansible_lsb.codename }}-pgdg main' state=present
+  register: add_postgres_repo
+
+- name: Add Python PPA
+  apt_repository:
+    repo: 'ppa:deadsnakes/ppa'
+    state: '{{ "present" if use_deadsnakes else "absent" }}'
+  register: add_deadsnakes_ppa
+  tags:
+    - python
+
+- name: Update package list
+  apt: update_cache=yes
+  when: |
+    add_postgres_repo is defined and add_postgres_repo is changed or
+    add_pango_repo is defined and add_pango_repo is changed or
+    add_deadsnakes_ppa is defined and add_deadsnakes_ppa is changed or
+    add_python_ppa_bionic is defined and add_python_ppa_bionic is changed
+  tags:
+    - python
+
+
+- name: Install python packages
+  become: yes
+  apt:
+    name:
+      - python{{ python_version }}={{ python_version }}.*
+      - python{{ python_version }}-dev
+  tags:
+    - python
+
+- name: Install extra python packages
+  become: yes
+  apt:
+    name:
+      - python{{ python_version }}-distutils  # for virtualenv
+  when: python_version == '3.9'
+  tags:
+    - python
+
+# Install base packages, common to all servers
+- name: Install common packages
+  become: yes
+  apt:
+    name:
+      - build-essential
+      - postgresql-client-common
+      - postgresql-client-{{ postgresql_version }}
+      - libxml2-dev
+      - libxslt1-dev
+      - tig # git browser
+      - libpq-dev
+      - curl
+      - htop
+      - tmpreaper # remove files older than x days
+      - mailutils
+      - at
+      - screen
+      - sysstat
+      - gettext
+      - mosh
+      - libjpeg-dev
+      - libfreetype6-dev
+      - ranger  # cmdline file browser
+      - libffi-dev  # Required for installing github3py
+      - libssl-dev  # Required for pip setup tools and libcurl4-openssl-dev
+      - tmux
+      - reptyr # move process into tmux session
+      - unzip
+      - zip
+      - iotop
+      - ncdu # 'du' improved
+      - monit # service restarter
+      - libcairo2
+      - libpango1.0-0
+      - auditd
+
+# Install ntp package
+- name: Install NTP package when Chrony is not defined.
+  become: yes
+  apt:
+    name:
+      - ntp
+  when: not use_chrony
+
+# Install chrony package
+- name: Install chrony package
+  become: yes
+  apt:
+    name:
+      - chrony
+  when: use_chrony
+
+- name: add new line
+  lineinfile:
+    state: present
+    dest: "/etc/chrony/chrony.conf"
+    insertbefore: '^pool ntp.ubuntu.com '
+    line: server 169.254.169.123 prefer iburst
+  notify: restart chrony
+  when: use_chrony
+
+- name: Install common packages (Bionic)
+  become: yes
+  apt:
+    name:
+      - python-minimal
+      - python3-pip
+      - software-properties-common
+      - ufw
+  when: ansible_distribution_version == '18.04'
+
+- name: Install common packages (Jammy)
+  become: yes
+  apt:
+    name:
+      - acl
+      - software-properties-common
+      - ufw
+  when: ansible_distribution_version == '22.04'
+
+- name: Install pip packages
+  pip:
+    name:
+      - virtualenv
+      - sh
+      - httplib2
+      - pexpect
+    umask: "0022"
+  become: yes
+
+- name: Install virtualenv-clone
+  become: yes
+  pip:
+    name: virtualenv-clone
+    version: 0.5.1
+    umask: "0022"

@@ -1,0 +1,30 @@
+- name: Copy staticfiles cache
+  when: shared_dir_for_staticfiles
+  block:
+    - name: Require staticfiles cache
+      stat:
+        path: '{{ shared_dir_for_staticfiles }}/{{ code_version }}/staticfiles/CACHE'
+      register: result
+      failed_when: not result.stat.isdir | default(False)
+
+    - name: Create staticfiles/CACHE
+      file:
+        path: '{{ code_source }}/staticfiles/CACHE'
+        state: directory
+        mode: 0755
+
+    - name: Copy shared staticfiles/CACHE to local
+      synchronize:
+        src: '{{ shared_dir_for_staticfiles }}/{{ code_version }}/staticfiles/CACHE/'
+        dest: '{{ code_source }}/staticfiles/CACHE/'
+        recursive: true
+        delete: true
+      delegate_to: '{{ inventory_hostname }}'
+      diff: false
+
+- name: Assert single proxy host
+  fail:
+    msg: >-
+      There should be only one 'proxy' host. Ensure that only one host is
+      assigned to the 'proxy' group, or set 'shared_dir_for_staticfiles'.
+  when: not shared_dir_for_staticfiles

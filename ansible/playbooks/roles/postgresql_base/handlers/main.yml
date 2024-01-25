@@ -1,0 +1,23 @@
+---
+- name: Start postgres
+  become: yes
+  service:
+    name: "postgresql@{{ postgresql_version }}-main"
+    state: started
+
+- name: Restart postgres
+  become: yes
+  service:
+    name: "postgresql@{{ postgresql_version }}-main"
+    state: restarted
+
+- name: Reload postgres
+  become: yes
+  service:
+    name: "postgresql@{{ postgresql_version }}-main"
+    state: reloaded
+
+- name: reload systemd
+  become: yes
+  systemd:
+    daemon_reload: yes

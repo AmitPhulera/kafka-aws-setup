@@ -1,0 +1,11 @@
+---
+- name: Add cluster config
+  become: yes
+  lineinfile:
+    dest: /etc/redis/{{ redis_port }}.conf
+    line: '{{ item.key }} {{ item.value }}'
+  with_dict: "{{ cluster_config }}"
+  tags: redis_config
+
+- name: Start redis service
+  service: name="{{ redis_service_name }}" state=restarted enabled=yes

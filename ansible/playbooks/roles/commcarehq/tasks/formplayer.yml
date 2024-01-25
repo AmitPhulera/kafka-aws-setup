@@ -1,0 +1,28 @@
+- name: create services home
+  become: yes
+  file:
+    path: "{{ service_home }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0777
+    state: directory
+  tags:
+    - formplayer_deploy
+
+- name: define formplayer spring services
+  become: yes
+  template:
+    src: "{{ supervisor_service_files.formplayer_spring.template }}"
+    dest: "{{ supervisor_service_files.formplayer_spring.file_path }}"
+    owner: "{{ cchq_user }}"
+    group: "{{ cchq_user }}"
+    mode: 0644
+  when: supervisor_service_files.formplayer_spring.should_exist
+  with_items:
+    - env_vars:
+        http_proxy: "{% if http_proxy_address is defined %}http://{{ http_proxy_address }}:{{ http_proxy_port }}{% endif %}"
+        https_proxy: "{% if http_proxy_address is defined %}https://{{ http_proxy_address }}:{{ http_proxy_port }}{% endif %}"
+        no_proxy: "{% if http_proxy_address is defined %}{{ groups['all'] | join(',') }},{{ app_processes_config.additional_no_proxy_hosts }}{% endif %}"
+        TMPDIR: '{{ encrypted_tmp }}'
+  tags:
+    - formplayer_deploy

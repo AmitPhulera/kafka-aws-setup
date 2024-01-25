@@ -1,0 +1,67 @@
+{% set host='https://' ~ ALTERNATE_FORMPLAYER_HQ_HOST | default(SITE_HOST) %}
+commcarehq.host={{ host }}
+commcarehq.formplayerAuthKey={{ FORMPLAYER_INTERNAL_AUTH_KEY }}
+server.port={{ formplayer_port }}
+user.suffix=commcarehq.org
+logging.config=logback-spring.xml
+sqlite.dataDir={{ formplayer_data_dir }}/
+
+// Takes the format of https://<key>@sentry.io/<project>
+// More info on the DSN can be found here: https://docs.sentry.io/quickstart/#configure-the-dsn
+{% if http_proxy_address is defined %}
+sentry.dsn={{ formplayer_sentry_dsn }}?http.proxy.host={{ http_proxy_address }}&http.proxy.port={{ http_proxy_port }}
+{% else %}
+sentry.dsn={{ formplayer_sentry_dsn }}
+{% endif %}
+sentry.environment={{ env_monitoring_id }}
+sentry.tags.HQHost={{ host }}
+sentry.release={{ formplayer_release_name }}
+
+spring.datasource.driver-class-name=org.postgresql.Driver
+spring.datasource.url=jdbc:postgresql://{{ postgresql_dbs.formplayer.pgbouncer_endpoint }}:{{ postgresql_dbs.formplayer.port
+}}/{{ formplayer_db_name }}?prepareThreshold=0
+spring.datasource.username={{ postgres_users.commcare.username }}
+spring.datasource.password={{ postgres_users.commcare.password }}
+
+# separate DS for flyway which bypasses pgbouncer to avoid session locking issues
+spring.flyway.driver-class-name=org.postgresql.Driver
+spring.flyway.url=jdbc:postgresql://{{ postgresql_dbs.formplayer.host }}:5432/{{ formplayer_db_name }}?prepareThreshold=0
+spring.flyway.user={{ postgres_users.commcare.username }}
+spring.flyway.password={{ postgres_users.commcare.password }}
+
+spring.jpa.hibernate.ddl-auto
+
+smtp.host={{ localsettings.EMAIL_SMTP_HOST }}
+smtp.port={{ localsettings.EMAIL_SMTP_PORT }}
+smtp.username={{ EMAIL_LOGIN }}
+{% if EMAIL_PASSWORD %}
+smtp.password={{ EMAIL_PASSWORD }}
+{% else %}
+smtp.password=dummy
+{% endif %}
+
+smtp.from.address=commcarehq-noreply+{{ inventory_hostname_short }}@dimagi.com
+smtp.to.address=commcarehq-ops+formplayer@dimagi.com
+
+// Redis for locking
+{% if is_redis_cluster %}
+redis.clusterString={{ groups.redis_cluster_master | join(":" + localsettings.REDIS_PORT + ",") }}:{{ localsettings.REDIS_PORT }}
+{% else %}
+redis.hostname={{ localsettings.REDIS_HOST }}
+{% endif %}
+
+{% if localsettings.get('REDIS_PASSWORD') %}
+redis.Password={{ localsettings.REDIS_PASSWORD }}
+{% endif %}
+
+{% if formplayer_sensitive_data_logging %}
+sensitiveData.enableLogging=true
+{% endif %}
+
+{% if formplayer_forward_ip_proxy %}
+server.forward-headers-strategy=NATIVE
+{% endif %}
+
+{% if formplayer_detailed_tags is defined %}
+detailed_tagging.tag_names={{ formplayer_detailed_tags|join(',') }}
+{% endif %}

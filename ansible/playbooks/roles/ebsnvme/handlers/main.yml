@@ -1,0 +1,3 @@
+- name: "Reload udev rules"
+  become: yes
+  shell: '/bin/udevadm control --reload-rules && /bin/udevadm trigger'

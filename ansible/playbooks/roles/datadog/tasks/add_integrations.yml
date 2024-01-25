@@ -1,0 +1,31 @@
+- name: Install custom checks
+  get_url:
+    url: "{{ item.url }}"
+    dest: "/etc/datadog-agent/checks.d/{{ item.name }}.py"
+    checksum: "{{ item.checksum }}"
+    force: yes
+    owner: dd-agent
+    group: dd-agent
+  notify: restart datadog
+  when: item.enabled
+  loop: "{{ datadog_custom_integrations }}"
+
+- name: Create datadog integration conf directories
+  file:
+    path: "/etc/datadog-agent/conf.d/{{ item.name }}.d"
+    state: directory
+    owner: dd-agent
+    group: dd-agent
+  when: item is defined and item.enabled
+  with_items: "{{ datadog_integrations }}"
+
+- name: Add datadog integration configs
+  template:
+    src: "{{ item.name }}.yaml.j2"
+    dest: "/etc/datadog-agent/conf.d/{{ item.name }}.d/conf.yaml"
+    owner: dd-agent
+    group: dd-agent
+    mode: 0640
+  notify: restart datadog
+  when: item is defined and item.enabled
+  with_items: "{{ datadog_integrations }}"

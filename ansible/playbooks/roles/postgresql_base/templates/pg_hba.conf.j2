@@ -1,0 +1,76 @@
+{{ ansible_managed|comment }}
+
+# Database administrative login by Unix domain socket
+local   all             postgres                                peer
+
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+# Allow replication connections from localhost, by a user with the replication privilege.
+local   replication     postgres                                peer
+
+{% for entry in postgresql_hba_entries %}
+{{ entry.contype|default('host') }}    {{ entry.databases|default('all') }}    {{ entry.users|default('all') }}    {% if entry.contype != 'local' %}{{ entry.netmask }}{% endif %}    {{ entry.method|default('md5') }}
+{% endfor %}
+
+{% for standby in groups.get('pg_standby', []) %}
+{% if hostvars[standby].hot_standby_master|default(None) == inventory_hostname %}
+host replication    {{ postgres_users.replication.username|default('hqrepl') }}     {{ standby }}/32   md5
+{% endif %}
+{% endfor %}
+
+{% if inventory_hostname in groups.get('citusdb_worker', []) %}
+
+# Allow trust from localhost for pgbouncer
+host    all             all             127.0.0.1/32            trust 
+host    all             all             ::1/128                 trust
+{% for host in groups.get('citusdb_master', []) %}
+{% if host | ipaddr %}
+host   all	all	{{ host }}/32   trust
+{% else %}
+host   all	all	{{ lookup('dig', host, wantlist=True)[0] }}/32	trust
+{% endif %}
+{% endfor %}
+
+# Allow replication between citusdb workers for cluster re-balancing
+{% for host in groups.get('citusdb_worker', [])|difference([inventory_hostname]) %}
+{% if host | ipaddr %}
+host   replication	{{ postgres_users.replication.username|default('hqrepl') }}     {{ host }}/32   md5
+{% else %}
+host   replication	{{ postgres_users.replication.username|default('hqrepl') }}      {{ lookup('dig', host, wantlist=True)[0] }}/32	md5
+{% endif %}
+{% endfor %}
+
+{% endif %}
+
+
+# "local" is for Unix domain socket connections only
+local   all             all                                     peer
+
+# IPv4 local connections:
+host    all             all             127.0.0.1/32            md5
+
+# IPv6 local connections:
+host    all             all             ::1/128                 md5
+
+# Allow connections from PgBouncer hosts
+{% for db in postgresql_dbs.all %}
+{% if db.host == inventory_hostname %}
+{% for host in db.pgbouncer_hosts %}
+{% if host | ipaddr %}
+host   all	all	{{ host }}/32   trust
+{% else %}
+host   all	all	{{ lookup('dig', host, wantlist=True)[0] }}/32	trust
+{% endif %}
+{% endfor %}
+{% if db.name == 'formplayer' %}
+# Allow connections from Formplayer hosts
+{% for host in groups.formplayer %}
+{% if host | ipaddr %}
+host   all	all	{{ host }}/32   trust
+{% else %}
+host   all	all	{{ lookup('dig', host, wantlist=True)[0] }}/32	trust
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% endfor %}

@@ -1,0 +1,110 @@
+---
+
+- name: create kafka group
+  group: name="{{ kafka_group }}" system=yes state=present
+
+- name: add user "kafka"
+  user: name="{{ kafka_group }}" group="{{ kafka_group }}" shell=/sbin/nologin system=yes state=present
+
+- name: Download Kafka
+  get_url:
+    url: "http://{{ apache_mirror }}/kafka/{{ kafka_version }}/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz"
+    dest: "/opt/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz"
+  when: kafka_version != '2.6.1'
+
+- name: Download Kafka 2.6.1
+  get_url:
+    url: "http://{{ apache_mirror }}/kafka/{{ kafka_version }}/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz"
+    dest: "/opt/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz"
+    checksum: "{{ kafka_download_sha512 }}"
+  when: kafka_version == '2.6.1'
+
+- name: Extract Kafka
+  unarchive: src="/opt/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz" dest=/opt/ copy=no creates="/opt/kafka_{{ kafka_scala_version }}-{{ kafka_version }}"
+
+- name: Symlink install directory
+  file: src="/opt/kafka_{{ kafka_scala_version }}-{{ kafka_version }}" path=/opt/kafka state=link
+
+- name: Set permissions to Kafka folder
+  file: path=/opt/kafka/ owner=root group=root recurse=yes follow=no
+
+- name: Create Kafka data directories
+  become: yes
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ kafka_user }}"
+    group: "{{ kafka_group }}"
+    mode: 0755
+  with_items:
+    - "{{ kafka_data_dir }}"
+
+- name: Create Kafka log directory
+  file: path="{{ kafka_log_dir }}" state=directory owner="{{ kafka_user }}" group="{{ kafka_group }}" recurse=yes
+
+- name: Link the log directory
+  file: src="{{ kafka_log_dir }}" path=/opt/kafka/logs state=link
+
+- name: Create Kafka conf directory
+  file: path="{{ kafka_conf_dir }}" state=directory owner=root group=root mode=755
+
+- name: Configure Kafka server
+  template: src=server.properties.j2 dest="{{kafka_conf_dir}}/server.properties"
+
+- name: Copy Kafka partition reassign Script
+  get_url:
+    url: "https://raw.githubusercontent.com/dimas/kafka-reassign-tool/master/kafka-reassign-tool" 
+    dest: "/opt/kafka/bin/kafka-reassign-tool.rb"
+    mode: 0755
+
+- name: Copies kafka log4j.properties (2.X.X)
+  copy:
+    src: "log4j_2.X.X.properties"
+    dest: /opt/kafka/config/log4j.properties
+    owner: root
+    group: root
+    mode: 0644
+  when: kafka_version is version('2.0', '>')
+  tags: log4j
+
+- name: Copies kafka log4j.properties (0.8.2.2)
+  copy:
+    src: "log4j_0.8.2.2.properties"
+    dest: /opt/kafka/config/log4j.properties
+    owner: root
+    group: root
+    mode: 0644
+  when: kafka_version == "0.8.2.2"
+  tags: log4j
+
+- name: Install Kafka systemd script
+  template: src=kafka-server.service.j2 dest=/etc/systemd/system/kafka-server.service mode=0755
+
+- name: Remove kafka.service (cleanup)
+  file:
+    name: /etc/systemd/system/kafka.service
+    state: absent
+
+- name: Reload Systemd Daemon
+  become: yes
+  systemd:
+    daemon_reload: yes
+
+# Allows to excecute task only when a tag is specified: https://serverfault.com/a/748864
+- shell: /bin/true
+  changed_when: false
+  register: no_tags
+
+- name: start Kafka service
+  service: name=kafka-server enabled=yes state=started
+  when: no_tags is not defined
+  register: kafka_service_started
+  tags: after-reboot
+
+# Restarting a service right after it's been started will cause an unnecessary/non-idempotent restart
+- name: Enable and start Kafka service
+  service: name=kafka-server enabled=yes state=restarted
+  when: kafka_service_started.changed == False
+
+- name: Add Kafka binaries to PATH
+  copy: src=kafka.sh dest=/etc/profile.d/ owner=root group=root mode=0644
