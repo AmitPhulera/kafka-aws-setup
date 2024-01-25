@@ -1,0 +1,32 @@
+---
+- name: Common Database Machine Setup
+  hosts:
+    - kafka
+    - zookeeper
+  become: true
+  roles:
+    - {role: ecryptfs, tags: 'ecryptfs'}
+
+- name: Zookeeper
+  hosts: zookeeper
+  become: true
+  roles:
+    - {role: zookeeper, tags: 'zookeeper'}
+
+- name: Kafka
+  hosts: kafka
+  become: true
+  environment:
+    JMX_PORT: 9999
+  roles:
+    - {role: kafka, tags: 'kafka'}
+
+- name: cleanup
+  hosts: kafka
+  become: true
+  tasks:
+    - name: remove legacy logrotate configs
+      file:
+        path: "/etc/logrotate.d/{{ deploy_env }}_kafka"
+        state: absent
+  tags: cleanup
