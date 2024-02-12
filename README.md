@@ -35,10 +35,10 @@ For this test the instance ids and private IPs of the machines are:
 
 | Instance   | Instance ID          | IP       |
 |---|---|---|
-| Control    | i-08adc2003ee8712b0  | 10.203.10.247 |
-| Kafka 0    | i-06f6299ebc5fa8945  | 10.203.40.252 |
-| Kafka 1    | i-088ed9f6f4efbbdfb  | 10.203.41.170 |
-| Kafka 2    | i-011abc49c54756859  | 10.203.42.227 |
+| Control    | i-0e20857471c0fde17  | 10.203.10.26 |
+| Kafka 0    | i-0a6374d28d1c8625c  | 10.203.40.203 |
+| Kafka 1    | i-09748f913b023f225  | 10.203.41.95 |
+| Kafka 2    | i-0111f4a7ef827b89a  | 10.203.42.78 |
 
 The above information can be extracted from AWS console or from `terraform.tfstate` file.
 
