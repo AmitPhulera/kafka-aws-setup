@@ -91,3 +91,12 @@ cd kafka-aws-setup
 14. From control machine run ansible-playbook `ansible-playbook -i ansible/inventory.ini ansible/playbooks/deploy_kafka.yml`
 
 If ansible-playbook does not work then restart your shell, it should work
+
+<hr/>
+
+Some Helpful commands - 
+
+To check kafka logs  - `journalctl -u kafka-server`
+
+To get status|start|stop|restart of kafka server - `systemctl status|start|stop|restart kafka-server`
+
