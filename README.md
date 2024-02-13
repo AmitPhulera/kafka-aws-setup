@@ -73,9 +73,21 @@ sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
 pip install ansible==4.10.0
 ```
 
-11. scp `ansible` directory and your private key which is `ec2_kafka` in this example from this repo to the control machine.
+11. scp your private key which is `ec2_kafka` in this example from this repo to the control machine.
 ```
-scp -i ~/.ssh/ec2_kafka ansible.zip ~/.ssh/ec2_kafka ubuntu@i-08adc2003ee8712b0:/home/ubuntu
+scp -i ~/.ssh/ec2_kafka ~/.ssh/ec2_kafka ubuntu@i-08adc2003ee8712b0:/home/ubuntu/.ssh
 ```
 
-12. From control machine run ansible-playbook `ansible-playbook -i ansible/inventory.ini ansible/playbooks/deploy_kafka.yml`
+12. Clone this directory in the control machine
+```
+git clone https://github.com/AmitPhulera/kafka-aws-setup
+```
+
+13. cd into the repository directory
+```
+cd kafka-aws-setup
+```
+
+14. From control machine run ansible-playbook `ansible-playbook -i ansible/inventory.ini ansible/playbooks/deploy_kafka.yml`
+
+If ansible-playbook does not work then restart your shell, it should work
