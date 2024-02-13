@@ -108,7 +108,7 @@ module "server__kafka_backup-production" {
   source = "./modules/server"
 
   server_name = var.server_name[count.index]
-  server_instance_type = "t3a.nano"
+  server_instance_type = "t3.small"
   network_tier = "db-private"
   az = var.az[count.index]
   volume_size = 10
