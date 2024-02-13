@@ -13,7 +13,12 @@ aws configure sso
 To setup sso for aws cli. It will ask you for `sesion-name`, call it backup-production and will ask for sso_start_url and sso_region. Set the values to `https://dimagi.awsapps.com/start/` and `us-east-1`
 
 It will open up SSO login screen in your browser. Login and allow access to the account.
-It will ask you to select account and role, choose Commcare-Production-Backup clikc on next and then select AWSAdministratorRole. Set aws-cli-region as `us-east-2` and set profile name as `backup-production`. The terraform scripts are configured to look for `backup-proudction` profile. You can change that from `terraform.tf` file in provider section.
+It will ask you to select account and role, choose Commcare-Production-Backup click on next and then select AWSAdministratorRole. 
+
+Set `aws-cli-region` as `us-east-2` 
+Set `CLI profile` name as `backup-production`.
+
+The terraform scripts are configured to look for `backup-proudction` profile. You can change that from `terraform.tf` file in provider section.
 
 4. Ensure terraform is installed and switch to `terraform` directory run `cd terraform`.
 
@@ -33,12 +38,12 @@ What is does is that for any hosts starting with i-* or mi-* it will add the fol
 
 For this test the instance ids and private IPs of the machines are:
 
-| Instance   | Instance ID          | IP       |
+| Instance   | Instance ID          | IP            |
 |---|---|---|
-| Control    | i-0e20857471c0fde17  | 10.203.10.26 |
-| Kafka 0    | i-0a6374d28d1c8625c  | 10.203.40.203 |
-| Kafka 1    | i-09748f913b023f225  | 10.203.41.95 |
-| Kafka 2    | i-0111f4a7ef827b89a  | 10.203.42.78 |
+| Control    | i-08f79b21c058d9495  | 10.203.10.115 |
+| Kafka 0    | i-054f68f93a8973e53  | 10.203.40.211 |
+| Kafka 1    | i-048420a5cc3ced4a2  | 10.203.41.91  |
+| Kafka 2    | i-058a564d84cbec1c7  | 10.203.42.247 |
 
 The above information can be extracted from AWS console or from `terraform.tfstate` file.
 
@@ -47,7 +52,7 @@ Upate `ansible/inventory.in` with the above values.
 8. SSH into control machine - 
 
 ```
-ssh -i ~/.ssh/ec2_kafka  ubuntu@i-06f6299ebc5fa8945
+ssh -i ~/.ssh/ec2_kafka  ubuntu@i-08f79b21c058d9495
 ```
 
 9. Setup control machine by installing required librariesnstall python-dev, ansible and required libraries
